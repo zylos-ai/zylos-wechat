@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
-import { uploadMedia } from '../src/lib/media-upload.js';
+import { uploadMedia, MEDIA_TYPE } from '../src/lib/media-upload.js';
 
 // --- Resolve data dir ---
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
@@ -130,10 +130,26 @@ async function main() {
 
   if (mediaMatch) {
     // --- Media send ---
+    const mediaTypeStr = mediaMatch[1].toLowerCase();
     const mediaPath = mediaMatch[2].trim();
+
+    // Map explicit type to MEDIA_TYPE constant
+    const typeMap = {
+      image: MEDIA_TYPE.IMAGE,
+      video: MEDIA_TYPE.VIDEO,
+      file: MEDIA_TYPE.FILE,
+      voice: MEDIA_TYPE.VOICE,
+    };
+    const mediaType = typeMap[mediaTypeStr];
+    if (!mediaType) {
+      console.error(`Unknown media type: "${mediaTypeStr}". Use: image, video, file, voice`);
+      process.exit(1);
+    }
+
     const mediaItem = await uploadMedia(client, {
       filePath: mediaPath,
       toUserId: to,
+      mediaType,
     });
 
     const clientId = `zylos-wechat:${Date.now()}-${randomBytes(4).toString('hex')}`;
