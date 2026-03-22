@@ -22,6 +22,7 @@ import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
 import { uploadMedia, MEDIA_TYPE } from '../src/lib/media-upload.js';
+import { TypingManager } from '../src/lib/typing.js';
 
 // --- Resolve data dir ---
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
@@ -195,6 +196,10 @@ async function main() {
       }
     }
   }
+
+  // Cancel typing indicator after successful send
+  const typing = new TypingManager(client);
+  typing.stopTyping(to).catch(() => {});
 
   console.log('OK');
 }

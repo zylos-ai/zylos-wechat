@@ -5,6 +5,7 @@ import { createLogger } from './lib/logger.js';
 import { sendToC4 } from './lib/bridge.js';
 import { AccountManager } from './lib/account-manager.js';
 import { ContextTokenStore } from './lib/context-tokens.js';
+import { TypingManager } from './lib/typing.js';
 
 const logger = createLogger(config.logLevel);
 
@@ -22,6 +23,7 @@ const manager = new AccountManager(dataDir);
 const contextTokens = new ContextTokenStore({
   persistPath: join(dataDir, 'context-tokens.json'),
 });
+const typingManagers = new Map(); // normalizedId → TypingManager
 
 // In-memory dedupe set (msg_id + account, with max size)
 const seenMessages = new Set();
@@ -105,6 +107,12 @@ async function handleMessages(msgs, accountId) {
     // Format for C4 dispatch
     const content = `[WeChat DM] ${fromUserId} said: ${text}`;
 
+    // Start typing indicator (non-blocking — indicates processing to sender)
+    const typingMgr = typingManagers.get(accountId);
+    if (typingMgr && fromUserId) {
+      typingMgr.startTyping(fromUserId, msg.context_token).catch(() => {});
+    }
+
     try {
       await sendToC4({
         scriptPath: config.c4ReceiveScript,
@@ -115,6 +123,10 @@ async function handleMessages(msgs, accountId) {
       });
     } catch (err) {
       logger.error('C4 dispatch failed:', err.message);
+      // Stop typing on dispatch failure
+      if (typingMgr && fromUserId) {
+        typingMgr.stopTyping(fromUserId).catch(() => {});
+      }
     }
 
     markSeen(dedupeKey);
@@ -139,10 +151,20 @@ async function main() {
 
   manager.on('connected', (acctId) => {
     logger.info(`[${acctId}] polling started`);
+    // Create TypingManager for this account
+    const client = manager.getClient(acctId);
+    if (client) {
+      typingManagers.set(acctId, new TypingManager(client));
+    }
   });
 
   manager.on('disconnected', (acctId) => {
     logger.info(`[${acctId}] polling stopped`);
+    const typingMgr = typingManagers.get(acctId);
+    if (typingMgr) {
+      typingMgr.stopAll();
+      typingManagers.delete(acctId);
+    }
   });
 
   // Start all saved accounts
