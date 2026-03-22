@@ -8,6 +8,10 @@
  * Or directly:
  *   node scripts/send.js --to <wechat_id> --text <message> --context-token <token> [--account <normalized_id>]
  *
+ * Media send (C4 format):
+ *   echo "[MEDIA:image]/path/to/image.png" | node scripts/send.js <endpoint_id>
+ *   echo "[MEDIA:file]/path/to/doc.pdf" | node scripts/send.js <endpoint_id>
+ *
  * The endpoint_id format from C4: "<normalized_account_id>|to:<wechat_user_id>"
  * Context token is loaded from the account's token cache if available.
  */
@@ -17,6 +21,7 @@ import { join } from 'node:path';
 import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
+import { uploadMedia } from '../src/lib/media-upload.js';
 
 // --- Resolve data dir ---
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
@@ -120,29 +125,58 @@ async function main() {
     baseUrl: creds.baseUrl,
   });
 
-  const clientId = `zylos-wechat:${Date.now()}-${randomBytes(4).toString('hex')}`;
+  // Check for media prefix: [MEDIA:type]/path/to/file
+  const mediaMatch = text.match(/^\[MEDIA:(\w+)\](.+)$/);
 
-  // Split long messages (4000 char limit)
-  const MAX_CHARS = 4000;
-  const chunks = [];
-  for (let i = 0; i < text.length; i += MAX_CHARS) {
-    chunks.push(text.slice(i, i + MAX_CHARS));
-  }
+  if (mediaMatch) {
+    // --- Media send ---
+    const mediaPath = mediaMatch[2].trim();
+    const mediaItem = await uploadMedia(client, {
+      filePath: mediaPath,
+      toUserId: to,
+    });
 
-  for (let i = 0; i < chunks.length; i++) {
+    const clientId = `zylos-wechat:${Date.now()}-${randomBytes(4).toString('hex')}`;
     const resp = await client.sendMessage({
       from_user_id: '',
       to_user_id: to,
-      client_id: `${clientId}-${i}`,
+      client_id: clientId,
       message_type: 2,
       message_state: 2,
       context_token: contextToken,
-      item_list: [{ type: 1, text_item: { text: chunks[i] } }],
+      item_list: [mediaItem],
     });
 
     if (resp.ret !== undefined && resp.ret !== 0) {
       console.error(`WeChat API error: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg}`);
       process.exit(1);
+    }
+  } else {
+    // --- Text send ---
+    const clientId = `zylos-wechat:${Date.now()}-${randomBytes(4).toString('hex')}`;
+
+    // Split long messages (4000 char limit)
+    const MAX_CHARS = 4000;
+    const chunks = [];
+    for (let i = 0; i < text.length; i += MAX_CHARS) {
+      chunks.push(text.slice(i, i + MAX_CHARS));
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      const resp = await client.sendMessage({
+        from_user_id: '',
+        to_user_id: to,
+        client_id: `${clientId}-${i}`,
+        message_type: 2,
+        message_state: 2,
+        context_token: contextToken,
+        item_list: [{ type: 1, text_item: { text: chunks[i] } }],
+      });
+
+      if (resp.ret !== undefined && resp.ret !== 0) {
+        console.error(`WeChat API error: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg}`);
+        process.exit(1);
+      }
     }
   }
 
