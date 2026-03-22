@@ -5,6 +5,7 @@ import { createLogger } from './lib/logger.js';
 import { sendToC4 } from './lib/bridge.js';
 import { AccountManager } from './lib/account-manager.js';
 import { ContextTokenStore } from './lib/context-tokens.js';
+import { TypingManager } from './lib/typing.js';
 
 const logger = createLogger(config.logLevel);
 
@@ -22,6 +23,7 @@ const manager = new AccountManager(dataDir);
 const contextTokens = new ContextTokenStore({
   persistPath: join(dataDir, 'context-tokens.json'),
 });
+const typingManagers = new Map(); // normalizedId → TypingManager
 
 // In-memory dedupe set (msg_id + account, with max size)
 const seenMessages = new Set();
@@ -70,7 +72,7 @@ function detectMessageType(msg) {
   return 'text';
 }
 
-async function handleMessages(msgs, accountId) {
+async function handleMessages(msgs, accountId, normalizedId) {
   for (const msg of msgs) {
     // Skip bot messages (message_type 2 = bot)
     if (msg.message_type === 2) continue;
@@ -86,9 +88,9 @@ async function handleMessages(msgs, accountId) {
 
     const fromUserId = msg.from_user_id || '';
 
-    // Update context token cache
+    // Update context token cache (keyed by normalizedId for send.js compat)
     if (msg.context_token && fromUserId) {
-      contextTokens.set(accountId, fromUserId, msg.context_token);
+      contextTokens.set(normalizedId, fromUserId, msg.context_token);
     }
 
     // DM allowlist check
@@ -100,10 +102,17 @@ async function handleMessages(msgs, accountId) {
 
     const text = extractText(msg);
     const rawType = detectMessageType(msg);
-    const endpoint = accountId;
+    // Use normalizedId as endpoint — send.js uses this to load credentials
+    const endpoint = normalizedId;
 
     // Format for C4 dispatch
     const content = `[WeChat DM] ${fromUserId} said: ${text}`;
+
+    // Start typing indicator (non-blocking — indicates processing to sender)
+    const typingMgr = typingManagers.get(accountId);
+    if (typingMgr && fromUserId) {
+      typingMgr.startTyping(fromUserId, msg.context_token).catch(() => {});
+    }
 
     try {
       await sendToC4({
@@ -115,6 +124,10 @@ async function handleMessages(msgs, accountId) {
       });
     } catch (err) {
       logger.error('C4 dispatch failed:', err.message);
+      // Stop typing on dispatch failure
+      if (typingMgr && fromUserId) {
+        typingMgr.stopTyping(fromUserId).catch(() => {});
+      }
     }
 
     markSeen(dedupeKey);
@@ -137,12 +150,22 @@ async function main() {
     logger.warn(`[${acctId}] session expired — paused for 60 minutes`);
   });
 
-  manager.on('connected', (acctId) => {
+  manager.on('connected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling started`);
+    // Create TypingManager keyed by raw accountId (matches handleMessages)
+    const client = manager.getClient(normalizedId);
+    if (client) {
+      typingManagers.set(acctId, new TypingManager(client));
+    }
   });
 
-  manager.on('disconnected', (acctId) => {
+  manager.on('disconnected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling stopped`);
+    const typingMgr = typingManagers.get(acctId);
+    if (typingMgr) {
+      typingMgr.stopAll();
+      typingManagers.delete(acctId);
+    }
   });
 
   // Start all saved accounts

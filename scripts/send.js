@@ -108,8 +108,12 @@ async function main() {
     // Load from persisted context token cache (written by the running service)
     const tokenCachePath = join(DATA_DIR, 'context-tokens.json');
     const tokenStore = ContextTokenStore.fromDisk(tokenCachePath);
-    const resolvedAccountId = creds.accountId || accountId;
-    contextToken = tokenStore.get(resolvedAccountId, to);
+    // index.js writes tokens keyed by normalizedId (= accountId arg from endpoint)
+    contextToken = tokenStore.get(accountId, to);
+    // Fallback: try raw accountId in case of older cache entries
+    if (!contextToken && creds.accountId && creds.accountId !== accountId) {
+      contextToken = tokenStore.get(creds.accountId, to);
+    }
 
     if (!contextToken) {
       console.error('ERR_CONTEXT_TOKEN_MISSING: No context_token found for this user');
@@ -194,6 +198,18 @@ async function main() {
         process.exit(1);
       }
     }
+  }
+
+  // Cancel typing indicator after successful send
+  // Directly call getConfig → sendTyping(status=2) since send.js is a separate process
+  // with no cached state from the main service
+  try {
+    const configResp = await client.getConfig(to, contextToken);
+    if (configResp.typing_ticket) {
+      await client.sendTyping(to, configResp.typing_ticket, 2);
+    }
+  } catch {
+    // Non-critical — typing cancel is best-effort
   }
 
   console.log('OK');
