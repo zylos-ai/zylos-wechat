@@ -132,6 +132,7 @@ export class WeChatApiClient {
    * @param {object} [opts]
    * @param {number} [opts.timeout]
    * @param {Record<string, string>} [opts.extraHeaders]
+   * @param {AbortSignal} [opts.signal] - External abort signal
    */
   async get(path, opts = {}) {
     const timeout = opts.timeout || TIMEOUT_REGULAR;
@@ -146,6 +147,15 @@ export class WeChatApiClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
+
+    // Chain external signal if provided
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        controller.abort();
+      } else {
+        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
 
     try {
       const res = await fetch(url, {
@@ -238,6 +248,7 @@ export class WeChatApiClient {
     return this.get(`/ilink/bot/get_qrcode_status?qrcode=${encoded}`, {
       timeout: TIMEOUT_LONGPOLL + 5_000,
       extraHeaders: { 'iLink-App-ClientVersion': '1' },
+      signal,
     });
   }
 
