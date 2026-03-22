@@ -82,6 +82,7 @@ export class AccountStore {
   async saveCredentials(creds) {
     const path = this.#credPath(creds.normalizedId);
     const data = {
+      accountId: creds.accountId, // raw ID (e.g. "hex@im.bot") — preserved for runtime use
       token: creds.token,
       baseUrl: creds.baseUrl,
       userId: creds.userId,

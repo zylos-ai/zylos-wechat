@@ -52,13 +52,15 @@ export class AccountManager extends EventEmitter {
         baseUrl: acct.baseUrl,
       });
 
-      const poller = this.#createPoller(client, acct.normalizedId, acct.normalizedId, onMessages);
+      // Use raw accountId if persisted, otherwise fall back to normalizedId
+      const rawAccountId = acct.accountId || acct.normalizedId;
+      const poller = this.#createPoller(client, rawAccountId, acct.normalizedId, onMessages);
 
       this.#accounts.set(acct.normalizedId, {
         client,
         poller,
         state: 'active',
-        accountId: acct.normalizedId,
+        accountId: rawAccountId,
       });
 
       // Start polling (don't await — runs in background)
