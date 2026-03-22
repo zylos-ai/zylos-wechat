@@ -13,7 +13,6 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
@@ -101,12 +100,18 @@ async function main() {
 
   // --- Resolve context token ---
   if (!contextToken) {
-    // Try loading from persisted context token cache
-    // Note: context tokens are primarily in-memory in the running service.
-    // For offline sends, the caller must provide --context-token.
-    console.error('ERR_CONTEXT_TOKEN_MISSING: context-token is required for WeChat sends');
-    console.error('Tip: context_token comes from the latest inbound message from this user');
-    process.exit(1);
+    // Load from persisted context token cache (written by the running service)
+    const tokenCachePath = join(DATA_DIR, 'context-tokens.json');
+    const tokenStore = ContextTokenStore.fromDisk(tokenCachePath);
+    const resolvedAccountId = creds.accountId || accountId;
+    contextToken = tokenStore.get(resolvedAccountId, to);
+
+    if (!contextToken) {
+      console.error('ERR_CONTEXT_TOKEN_MISSING: No context_token found for this user');
+      console.error('The user must send a message first so the service can cache their context_token.');
+      console.error('Or provide --context-token explicitly.');
+      process.exit(1);
+    }
   }
 
   // --- Build and send ---
@@ -124,15 +129,15 @@ async function main() {
     chunks.push(text.slice(i, i + MAX_CHARS));
   }
 
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
     const resp = await client.sendMessage({
       from_user_id: '',
       to_user_id: to,
-      client_id: `${clientId}-${chunks.indexOf(chunk)}`,
+      client_id: `${clientId}-${i}`,
       message_type: 2,
       message_state: 2,
       context_token: contextToken,
-      item_list: [{ type: 1, text_item: { text: chunk } }],
+      item_list: [{ type: 1, text_item: { text: chunks[i] } }],
     });
 
     if (resp.ret !== undefined && resp.ret !== 0) {

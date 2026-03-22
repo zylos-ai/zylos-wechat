@@ -1,11 +1,17 @@
 /**
  * Context Token Manager
  *
- * In-memory store for WeChat context tokens.
+ * In-memory store for WeChat context tokens with optional disk persistence.
  * Each inbound message carries a context_token that MUST be echoed
  * in every outbound reply to that user. Tokens are stored per
  * accountId:userId pair and updated on every inbound message.
+ *
+ * When persistPath is set, tokens are written to disk on every set()
+ * so that scripts/send.js (a separate process) can read them.
  */
+
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const DEFAULT_MAX_ENTRIES = 10_000;
 const DEFAULT_TTL_MS = 24 * 60 * 60_000; // 24 hours
@@ -14,15 +20,24 @@ export class ContextTokenStore {
   #tokens = new Map(); // "accountId:userId" → { token, updatedAt }
   #maxEntries;
   #ttlMs;
+  #persistPath;
+  #persistTimer = null;
 
   /**
    * @param {object} [opts]
    * @param {number} [opts.maxEntries=10000]
    * @param {number} [opts.ttlMs=86400000] - TTL in ms (24h default)
+   * @param {string} [opts.persistPath] - File path to persist tokens for cross-process reads
    */
   constructor(opts = {}) {
     this.#maxEntries = opts.maxEntries || DEFAULT_MAX_ENTRIES;
     this.#ttlMs = opts.ttlMs || DEFAULT_TTL_MS;
+    this.#persistPath = opts.persistPath || null;
+
+    // Load from disk if persist path exists
+    if (this.#persistPath) {
+      this.#loadFromDisk();
+    }
   }
 
   /**
@@ -54,6 +69,9 @@ export class ContextTokenStore {
     if (this.#tokens.size > this.#maxEntries) {
       this.#evictOldest();
     }
+
+    // Debounced persist to disk
+    this.#schedulePersist();
   }
 
   /**
@@ -104,6 +122,62 @@ export class ContextTokenStore {
    */
   get size() {
     return this.#tokens.size;
+  }
+
+  /**
+   * Load tokens from a persist file (for cross-process reads like send.js).
+   * @param {string} filePath
+   * @returns {ContextTokenStore}
+   */
+  static fromDisk(filePath) {
+    return new ContextTokenStore({ persistPath: filePath });
+  }
+
+  // --- Disk persistence ---
+
+  #loadFromDisk() {
+    if (!this.#persistPath) return;
+    try {
+      const raw = readFileSync(this.#persistPath, 'utf8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        for (const [key, entry] of Object.entries(data)) {
+          if (entry.token && entry.updatedAt) {
+            // Skip expired entries on load
+            if (Date.now() - entry.updatedAt <= this.#ttlMs) {
+              this.#tokens.set(key, entry);
+            }
+          }
+        }
+      }
+    } catch {
+      // File doesn't exist or is corrupt — start fresh
+    }
+  }
+
+  #schedulePersist() {
+    if (!this.#persistPath) return;
+
+    // Debounce: write at most every 500ms
+    if (this.#persistTimer) return;
+    this.#persistTimer = setTimeout(() => {
+      this.#persistTimer = null;
+      this.#writeToDisk();
+    }, 500);
+  }
+
+  #writeToDisk() {
+    if (!this.#persistPath) return;
+    try {
+      mkdirSync(dirname(this.#persistPath), { recursive: true });
+      const obj = {};
+      for (const [key, entry] of this.#tokens) {
+        obj[key] = entry;
+      }
+      writeFileSync(this.#persistPath, JSON.stringify(obj));
+    } catch (err) {
+      console.error('[context-tokens] persist failed:', err.message);
+    }
   }
 
   #evictOldest() {
