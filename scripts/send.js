@@ -108,8 +108,12 @@ async function main() {
     // Load from persisted context token cache (written by the running service)
     const tokenCachePath = join(DATA_DIR, 'context-tokens.json');
     const tokenStore = ContextTokenStore.fromDisk(tokenCachePath);
-    const resolvedAccountId = creds.accountId || accountId;
-    contextToken = tokenStore.get(resolvedAccountId, to);
+    // index.js writes tokens keyed by normalizedId (= accountId arg from endpoint)
+    contextToken = tokenStore.get(accountId, to);
+    // Fallback: try raw accountId in case of older cache entries
+    if (!contextToken && creds.accountId && creds.accountId !== accountId) {
+      contextToken = tokenStore.get(creds.accountId, to);
+    }
 
     if (!contextToken) {
       console.error('ERR_CONTEXT_TOKEN_MISSING: No context_token found for this user');
