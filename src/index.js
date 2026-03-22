@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { config, ensureDirs, paths, loadJson, saveJson } from './lib/config.js';
+import { config, ensureDirs, paths } from './lib/config.js';
 import { createLogger } from './lib/logger.js';
 import { sendToC4 } from './lib/bridge.js';
-import { WeChatClient } from './lib/wechat-client.js';
+import { AccountManager } from './lib/account-manager.js';
+import { ContextTokenStore } from './lib/context-tokens.js';
 
 const logger = createLogger(config.logLevel);
 
@@ -13,109 +14,162 @@ if (!config.enabled) {
 
 ensureDirs();
 
-const state = loadJson(paths.stateFile, {
-  accounts: {}
-});
+// --- Core state ---
 
-const dedupe = loadJson(paths.dedupeFile, {
-  seen: []
-});
+const dataDir = paths.dataDir;
+const manager = new AccountManager(dataDir);
+const contextTokens = new ContextTokenStore();
 
-const client = new WeChatClient({
-  apiBase: config.wechat.apiBase,
-  accessToken: config.wechat.accessToken,
-  uin: config.wechat.uin,
-  deviceId: config.wechat.deviceId,
-  timeoutMs: config.wechat.pollTimeoutMs
-});
+// In-memory dedupe set (msg_id + account, with max size)
+const seenMessages = new Set();
+const DEDUPE_MAX = 10_000;
 
 function markSeen(key) {
-  dedupe.seen.push(key);
-  if (dedupe.seen.length > 5000) dedupe.seen = dedupe.seen.slice(-5000);
-  saveJson(paths.dedupeFile, dedupe);
-}
-
-function isSeen(key) {
-  return dedupe.seen.includes(key);
-}
-
-function extractInboundItems(payload) {
-  if (!payload) return [];
-  if (Array.isArray(payload.items)) return payload.items;
-  if (Array.isArray(payload.updates)) return payload.updates;
-  return [];
-}
-
-async function handleInbound(item) {
-  const accountUin = String(config.wechat.uin || item.uin || 'default');
-  const msgId = String(item.msgId || item.id || '');
-  if (!msgId) return;
-
-  const dedupeKey = `${accountUin}:${msgId}`;
-  if (isSeen(dedupeKey)) return;
-
-  const from = item.from || item.sender || '';
-  if (config.dmAllowlist.length > 0 && !config.dmAllowlist.includes(from)) {
-    logger.debug('drop inbound from non-allowlisted user', from);
-    markSeen(dedupeKey);
-    return;
+  seenMessages.add(key);
+  if (seenMessages.size > DEDUPE_MAX) {
+    // Evict oldest entries (Sets iterate in insertion order)
+    const iter = seenMessages.values();
+    for (let i = 0; i < 1000; i++) iter.next();
+    const keep = new Set();
+    for (const v of seenMessages) {
+      if (keep.size >= seenMessages.size - 1000) break;
+      // skip first 1000
+    }
+    // Simpler: just rebuild from array tail
+    const arr = [...seenMessages];
+    seenMessages.clear();
+    for (const v of arr.slice(-DEDUPE_MAX + 1000)) {
+      seenMessages.add(v);
+    }
   }
-
-  const text = item.text || item.content || '';
-  const endpoint = accountUin;
-  const content = `[WeChat DM] ${from} said: ${text}`;
-
-  await sendToC4({
-    scriptPath: config.c4ReceiveScript,
-    channel: 'wechat',
-    endpoint,
-    content,
-    logger
-  });
-
-  markSeen(dedupeKey);
 }
 
-async function pollLoop() {
-  const accountUin = String(config.wechat.uin || 'default');
-  if (!state.accounts[accountUin]) state.accounts[accountUin] = { offset: 0, lastOkAt: null };
+// --- Message handling ---
 
-  const accountState = state.accounts[accountUin];
+function extractText(msg) {
+  if (!msg.item_list || msg.item_list.length === 0) return '';
+  for (const item of msg.item_list) {
+    if (item.type === 1 && item.text_item?.text) {
+      return item.text_item.text;
+    }
+  }
+  return '';
+}
 
-  try {
-    const payload = await client.getUpdates({
-      offset: accountState.offset,
-      timeoutMs: config.wechat.pollTimeoutMs
-    });
+function detectMessageType(msg) {
+  if (!msg.item_list || msg.item_list.length === 0) return 'text';
+  for (const item of msg.item_list) {
+    if (item.type === 2 && item.image_item) return 'image';
+    if (item.type === 5 && item.video_item) return 'video';
+    if (item.type === 4 && item.file_item) return 'file';
+    if (item.type === 3 && item.voice_item) return 'voice';
+  }
+  return 'text';
+}
 
-    const items = extractInboundItems(payload);
-    for (const item of items) {
-      await handleInbound(item);
-      const nextOffset = Number(item.offset || item.seq || accountState.offset);
-      if (!Number.isNaN(nextOffset) && nextOffset >= accountState.offset) {
-        accountState.offset = nextOffset + 1;
-      }
+async function handleMessages(msgs, accountId) {
+  for (const msg of msgs) {
+    // Skip bot messages (message_type 2 = bot)
+    if (msg.message_type === 2) continue;
+
+    // Skip non-finished messages (message_state 2 = finish)
+    if (msg.message_state !== undefined && msg.message_state !== 2) continue;
+
+    const msgId = String(msg.message_id || msg.seq || '');
+    if (!msgId) continue;
+
+    const dedupeKey = `${accountId}:${msgId}`;
+    if (seenMessages.has(dedupeKey)) continue;
+
+    const fromUserId = msg.from_user_id || '';
+
+    // Update context token cache
+    if (msg.context_token && fromUserId) {
+      contextTokens.set(accountId, fromUserId, msg.context_token);
     }
 
-    accountState.lastOkAt = new Date().toISOString();
-    saveJson(paths.stateFile, state);
-  } catch (error) {
-    logger.warn('poll failed', error.message);
-  } finally {
-    setTimeout(pollLoop, config.wechat.pollIntervalMs);
+    // DM allowlist check
+    if (config.dmAllowlist.length > 0 && !config.dmAllowlist.includes(fromUserId)) {
+      logger.debug('drop from non-allowlisted user:', fromUserId);
+      markSeen(dedupeKey);
+      continue;
+    }
+
+    const text = extractText(msg);
+    const rawType = detectMessageType(msg);
+    const endpoint = accountId;
+
+    // Format for C4 dispatch
+    const content = `[WeChat DM] ${fromUserId} said: ${text}`;
+
+    try {
+      await sendToC4({
+        scriptPath: config.c4ReceiveScript,
+        channel: 'wechat',
+        endpoint,
+        content,
+        logger,
+      });
+    } catch (err) {
+      logger.error('C4 dispatch failed:', err.message);
+    }
+
+    markSeen(dedupeKey);
+  }
+}
+
+// --- Lifecycle ---
+
+async function main() {
+  logger.info('zylos-wechat starting...');
+  logger.info('data dir:', dataDir);
+
+  await manager.init();
+
+  manager.on('error', (err, acctId) => {
+    logger.error(`[${acctId}] error:`, err.message);
+  });
+
+  manager.on('session-expired', (acctId) => {
+    logger.warn(`[${acctId}] session expired — paused for 60 minutes`);
+  });
+
+  manager.on('connected', (acctId) => {
+    logger.info(`[${acctId}] polling started`);
+  });
+
+  manager.on('disconnected', (acctId) => {
+    logger.info(`[${acctId}] polling stopped`);
+  });
+
+  // Start all saved accounts
+  await manager.startAll(handleMessages);
+
+  const accounts = manager.listAccounts();
+  if (accounts.length === 0) {
+    logger.info('no accounts configured — waiting for QR login via admin CLI');
+  } else {
+    logger.info(`${accounts.length} account(s) active`);
   }
 }
 
 function shutdown(sig) {
-  logger.info(`received ${sig}, flushing state...`);
-  saveJson(paths.stateFile, state);
-  saveJson(paths.dedupeFile, dedupe);
-  process.exit(0);
+  logger.info(`received ${sig}, shutting down...`);
+  manager.stopAll().then(() => {
+    logger.info('all pollers stopped');
+    process.exit(0);
+  }).catch(() => {
+    process.exit(1);
+  });
+
+  // Force exit after 5s
+  setTimeout(() => process.exit(0), 5_000);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-logger.info('zylos-wechat starting...');
-logger.info('api base:', config.wechat.apiBase);
-pollLoop();
+main().catch(err => {
+  logger.error('fatal:', err.message);
+  process.exit(1);
+});
