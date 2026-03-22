@@ -184,7 +184,7 @@ export class AccountManager extends EventEmitter {
     });
 
     poller.on('messages', (msgs, acctId) => {
-      onMessages(msgs, acctId);
+      onMessages(msgs, acctId, normalizedId);
     });
 
     poller.on('error', (err, acctId) => {
@@ -202,7 +202,7 @@ export class AccountManager extends EventEmitter {
     poller.on('connected', (acctId) => {
       const entry = this.#accounts.get(normalizedId);
       if (entry) entry.state = 'active';
-      this.emit('connected', acctId);
+      this.emit('connected', acctId, normalizedId);
     });
 
     poller.on('disconnected', (acctId) => {
@@ -210,7 +210,7 @@ export class AccountManager extends EventEmitter {
       if (entry && entry.state !== 'session-expired') {
         entry.state = 'disconnected';
       }
-      this.emit('disconnected', acctId);
+      this.emit('disconnected', acctId, normalizedId);
     });
 
     return poller;

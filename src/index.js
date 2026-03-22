@@ -72,7 +72,7 @@ function detectMessageType(msg) {
   return 'text';
 }
 
-async function handleMessages(msgs, accountId) {
+async function handleMessages(msgs, accountId, normalizedId) {
   for (const msg of msgs) {
     // Skip bot messages (message_type 2 = bot)
     if (msg.message_type === 2) continue;
@@ -88,9 +88,9 @@ async function handleMessages(msgs, accountId) {
 
     const fromUserId = msg.from_user_id || '';
 
-    // Update context token cache
+    // Update context token cache (keyed by normalizedId for send.js compat)
     if (msg.context_token && fromUserId) {
-      contextTokens.set(accountId, fromUserId, msg.context_token);
+      contextTokens.set(normalizedId, fromUserId, msg.context_token);
     }
 
     // DM allowlist check
@@ -102,7 +102,8 @@ async function handleMessages(msgs, accountId) {
 
     const text = extractText(msg);
     const rawType = detectMessageType(msg);
-    const endpoint = accountId;
+    // Use normalizedId as endpoint — send.js uses this to load credentials
+    const endpoint = normalizedId;
 
     // Format for C4 dispatch
     const content = `[WeChat DM] ${fromUserId} said: ${text}`;
@@ -149,16 +150,16 @@ async function main() {
     logger.warn(`[${acctId}] session expired — paused for 60 minutes`);
   });
 
-  manager.on('connected', (acctId) => {
+  manager.on('connected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling started`);
-    // Create TypingManager for this account
-    const client = manager.getClient(acctId);
+    // Create TypingManager keyed by raw accountId (matches handleMessages)
+    const client = manager.getClient(normalizedId);
     if (client) {
       typingManagers.set(acctId, new TypingManager(client));
     }
   });
 
-  manager.on('disconnected', (acctId) => {
+  manager.on('disconnected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling stopped`);
     const typingMgr = typingManagers.get(acctId);
     if (typingMgr) {
