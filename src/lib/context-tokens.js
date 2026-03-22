@@ -125,6 +125,17 @@ export class ContextTokenStore {
   }
 
   /**
+   * Force flush to disk immediately (call on shutdown).
+   */
+  flush() {
+    if (this.#persistTimer) {
+      clearTimeout(this.#persistTimer);
+      this.#persistTimer = null;
+    }
+    this.#writeToDisk();
+  }
+
+  /**
    * Load tokens from a persist file (for cross-process reads like send.js).
    * @param {string} filePath
    * @returns {ContextTokenStore}

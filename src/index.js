@@ -158,6 +158,7 @@ async function main() {
 
 function shutdown(sig) {
   logger.info(`received ${sig}, shutting down...`);
+  contextTokens.flush();
   manager.stopAll().then(() => {
     logger.info('all pollers stopped');
     process.exit(0);
