@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 import { WeChatApiClient } from './api-client.js';
 import { AccountStore } from './account-store.js';
 import { Poller } from './poller.js';
-import { qrLogin, normalizeAccountId } from './qr-login.js';
+import { qrLogin } from './qr-login.js';
 
 /**
  * @typedef {'idle'|'logging-in'|'active'|'disconnected'|'session-expired'} AccountState

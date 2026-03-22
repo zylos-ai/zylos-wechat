@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { join } from 'node:path';
 import { config, ensureDirs, paths } from './lib/config.js';
 import { createLogger } from './lib/logger.js';
 import { sendToC4 } from './lib/bridge.js';
@@ -18,7 +19,9 @@ ensureDirs();
 
 const dataDir = paths.dataDir;
 const manager = new AccountManager(dataDir);
-const contextTokens = new ContextTokenStore();
+const contextTokens = new ContextTokenStore({
+  persistPath: join(dataDir, 'context-tokens.json'),
+});
 
 // In-memory dedupe set (msg_id + account, with max size)
 const seenMessages = new Set();
@@ -155,6 +158,7 @@ async function main() {
 
 function shutdown(sig) {
   logger.info(`received ${sig}, shutting down...`);
+  contextTokens.flush();
   manager.stopAll().then(() => {
     logger.info('all pollers stopped');
     process.exit(0);
