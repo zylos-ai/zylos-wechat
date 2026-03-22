@@ -9,7 +9,6 @@
 
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
 
 export class AccountStore {
   #dataDir;
