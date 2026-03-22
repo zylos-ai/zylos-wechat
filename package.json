@@ -1,0 +1,32 @@
+{
+  "name": "zylos-wechat",
+  "version": "0.1.0",
+  "description": "WeChat component for Zylos (C4 bridge based)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "send": "node scripts/send.js",
+    "check": "node --check src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zylos-ai/zylos-wechat.git"
+  },
+  "keywords": [
+    "zylos",
+    "wechat",
+    "component",
+    "c4"
+  ],
+  "author": "Zylos AI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.8.2",
+    "dotenv": "^16.4.7"
+  }
+}
