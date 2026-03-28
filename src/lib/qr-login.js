@@ -59,6 +59,8 @@ export async function qrLogin(client, opts = {}) {
     onStatus?.('Scan the QR code with WeChat to log in');
 
     // Step 2: Poll for status
+    // Effective polling base URL; may be updated on IDC redirect.
+    let pollBaseUrl = null;
     let lastStatus = '';
     while (true) {
       if (signal?.aborted) throw new LoginError('Login aborted');
@@ -85,6 +87,18 @@ export async function qrLogin(client, opts = {}) {
         if (status === 'scaned') {
           onStatus?.('QR scanned — confirm on your phone');
         }
+      }
+
+      if (status === 'scaned_but_redirect') {
+        const redirectHost = statusResponse.redirect_host;
+        if (redirectHost) {
+          pollBaseUrl = `https://${redirectHost}`;
+          client.setBaseUrl(pollBaseUrl);
+          onStatus?.(`IDC redirect, switching polling host to ${redirectHost}`);
+        }
+        // Continue polling with the new (or unchanged) URL
+        await sleep(QR_POLL_INTERVAL);
+        continue;
       }
 
       if (status === 'confirmed') {

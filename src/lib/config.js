@@ -20,9 +20,6 @@ export const config = {
 
   wechat: {
     apiBase: process.env.WECHAT_API_BASE || 'https://ilinkai.weixin.qq.com',
-    accessToken: process.env.WECHAT_ACCESS_TOKEN || '',
-    uin: process.env.WECHAT_UIN || '',
-    deviceId: process.env.WECHAT_DEVICE_ID || '',
     pollTimeoutMs: Number(process.env.WECHAT_POLL_TIMEOUT_MS || 35000),
     pollIntervalMs: Number(process.env.WECHAT_POLL_INTERVAL_MS || 300)
   },

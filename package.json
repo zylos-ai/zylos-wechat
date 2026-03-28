@@ -8,6 +8,8 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "send": "node scripts/send.js",
+    "login": "node scripts/login.js",
+    "admin": "node src/admin.js",
     "check": "node --check src/index.js"
   },
   "repository": {
@@ -26,6 +28,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "qrcode-terminal": "^0.12.0"
   }
 }
