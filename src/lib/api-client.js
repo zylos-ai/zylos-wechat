@@ -11,6 +11,15 @@ const PACKAGE_VERSION = '1.0.2';
 const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
 
+/** iLink-App-Id: matches OpenClaw's package.json ilink_appid field. */
+const ILINK_APP_ID = 'bot';
+
+/**
+ * iLink-App-ClientVersion: uint32 encoded as 0x00MMNNPP.
+ * For version 2.1.1: (2<<16)|(1<<8)|1 = 131329.
+ */
+const ILINK_APP_CLIENT_VERSION = '131329';
+
 const TIMEOUT_LONGPOLL = 35_000;
 const TIMEOUT_REGULAR = 15_000;
 const TIMEOUT_LIGHTWEIGHT = 10_000;
@@ -63,6 +72,8 @@ export class WeChatApiClient {
       'Content-Type': 'application/json',
       'AuthorizationType': 'ilink_bot_token',
       'X-WECHAT-UIN': this.#uin,
+      'iLink-App-Id': ILINK_APP_ID,
+      'iLink-App-ClientVersion': ILINK_APP_CLIENT_VERSION,
     };
     if (this.#token && !opts.noAuth) {
       h['Authorization'] = `Bearer ${this.#token}`;
@@ -140,6 +151,8 @@ export class WeChatApiClient {
 
     const headers = {
       'X-WECHAT-UIN': this.#uin,
+      'iLink-App-Id': ILINK_APP_ID,
+      'iLink-App-ClientVersion': ILINK_APP_CLIENT_VERSION,
     };
     if (opts.extraHeaders) {
       Object.assign(headers, opts.extraHeaders);
@@ -256,13 +269,25 @@ export class WeChatApiClient {
 
   /**
    * Upload encrypted file to CDN.
-   * @param {string} uploadParam - From getUploadUrl response
-   * @param {string} filekey - 32-char hex
-   * @param {Buffer} encryptedData - AES-128-ECB encrypted data
+   * @param {object} params
+   * @param {string} [params.uploadFullUrl] - Full upload URL from getUploadUrl (takes precedence)
+   * @param {string} [params.uploadParam] - From getUploadUrl response (fallback)
+   * @param {string} params.filekey - 32-char hex
+   * @param {Buffer} params.encryptedData - AES-128-ECB encrypted data
    * @returns {Promise<string>} downloadParam (x-encrypted-param header)
    */
-  async cdnUpload(uploadParam, filekey, encryptedData) {
-    const url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+  async cdnUpload(params) {
+    const { uploadFullUrl, uploadParam, filekey, encryptedData } = params;
+
+    let url;
+    const trimmedFull = uploadFullUrl?.trim();
+    if (trimmedFull) {
+      url = trimmedFull;
+    } else if (uploadParam) {
+      url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+    } else {
+      throw new ApiError('CDN upload URL missing (need upload_full_url or upload_param)', 0);
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_REGULAR);

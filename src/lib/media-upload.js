@@ -57,9 +57,12 @@ export async function uploadMedia(client, opts) {
     throw new MediaUploadError(`getUploadUrl failed: ${err.message}`, 'ERR_WECHAT_UPLOAD_URL');
   }
 
-  if (!uploadResponse.upload_param) {
+  const uploadFullUrl = uploadResponse.upload_full_url?.trim();
+  const uploadParam = uploadResponse.upload_param;
+
+  if (!uploadFullUrl && !uploadParam) {
     throw new MediaUploadError(
-      `getUploadUrl returned no upload_param: ret=${uploadResponse.ret} errmsg=${uploadResponse.errmsg}`,
+      `getUploadUrl returned no upload URL (need upload_full_url or upload_param): ret=${uploadResponse.ret} errmsg=${uploadResponse.errmsg}`,
       'ERR_WECHAT_UPLOAD_URL'
     );
   }
@@ -68,7 +71,12 @@ export async function uploadMedia(client, opts) {
   let downloadParam;
   for (let attempt = 1; attempt <= CDN_MAX_RETRIES; attempt++) {
     try {
-      downloadParam = await client.cdnUpload(uploadResponse.upload_param, filekey, encryptedData);
+      downloadParam = await client.cdnUpload({
+        uploadFullUrl: uploadFullUrl || undefined,
+        uploadParam: uploadParam || undefined,
+        filekey,
+        encryptedData,
+      });
       break;
     } catch (err) {
       // 4xx: abort immediately

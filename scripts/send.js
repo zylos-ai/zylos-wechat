@@ -22,6 +22,7 @@ import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
 import { uploadMedia, MEDIA_TYPE } from '../src/lib/media-upload.js';
+import { stripMarkdown } from '../src/lib/markdown.js';
 
 // --- Resolve data dir ---
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
@@ -132,6 +133,11 @@ async function main() {
   // Check for media prefix: [MEDIA:type]/path/to/file
   const mediaMatch = text.match(/^\[MEDIA:(\w+)\](.+)$/);
 
+  // Strip markdown from text messages (not media commands)
+  if (!mediaMatch) {
+    text = stripMarkdown(text);
+  }
+
   if (mediaMatch) {
     // --- Media send ---
     const mediaTypeStr = mediaMatch[1].toLowerCase();
@@ -200,17 +206,15 @@ async function main() {
     }
   }
 
-  // Cancel typing indicator after successful send
-  // Directly call getConfig → sendTyping(status=2) since send.js is a separate process
-  // with no cached state from the main service
-  try {
-    const configResp = await client.getConfig(to, contextToken);
-    if (configResp.typing_ticket) {
-      await client.sendTyping(to, configResp.typing_ticket, 2);
-    }
-  } catch {
-    // Non-critical — typing cancel is best-effort
-  }
+  // Cancel typing indicator after successful send (best-effort, no retry)
+  // The main service's TypingManager handles ongoing typing; this cancel is a
+  // courtesy stop for the case where send.js runs standalone. Skip the extra
+  // getConfig round-trip — send a cancel with an empty ticket and let the API
+  // ignore it if the ticket is stale/missing.
+  Promise.race([
+    client.sendTyping(to, '', 2).catch(() => {}),
+    new Promise(resolve => setTimeout(resolve, 2000)),
+  ]).catch(() => {});
 
   console.log('OK');
 }
