@@ -20,6 +20,7 @@ import { qrLogin } from './qr-login.js';
 export class AccountManager extends EventEmitter {
   #store;
   #accounts = new Map(); // normalizedId → { client, poller, state, accountId }
+  #reconcilePromise = null;
 
   /**
    * @param {string} dataDir - Component data directory
@@ -44,32 +45,8 @@ export class AccountManager extends EventEmitter {
    * @param {(msgs: object[], accountId: string) => void} onMessages - Message handler
    */
   async startAll(onMessages) {
-    const accounts = await this.#store.loadAllAccounts();
-
-    for (const acct of accounts) {
-      const client = new WeChatApiClient({
-        token: acct.token,
-        baseUrl: acct.baseUrl,
-      });
-
-      // Use raw accountId if persisted, otherwise fall back to normalizedId
-      const rawAccountId = acct.accountId || acct.normalizedId;
-      const poller = this.#createPoller(client, rawAccountId, acct.normalizedId, onMessages);
-
-      this.#accounts.set(acct.normalizedId, {
-        client,
-        poller,
-        state: 'active',
-        accountId: rawAccountId,
-      });
-
-      // Start polling (don't await — runs in background)
-      poller.start().catch(err => {
-        console.error(`[account:${acct.normalizedId}] Poll loop crashed:`, err.message);
-      });
-    }
-
-    console.log(`[account-manager] Started ${accounts.length} account(s)`);
+    const result = await this.reconcile(onMessages);
+    console.log(`[account-manager] Started ${result.active} account(s)`);
   }
 
   /**
@@ -109,19 +86,12 @@ export class AccountManager extends EventEmitter {
     // Save to disk
     await this.#store.saveCredentials(creds);
 
-    // Create and start poller
-    const poller = this.#createPoller(client, creds.accountId, creds.normalizedId, opts.onMessages);
-
-    this.#accounts.set(creds.normalizedId, {
-      client,
-      poller,
-      state: 'active',
+    this.#startAccount({
+      normalizedId: creds.normalizedId,
       accountId: creds.accountId,
-    });
-
-    poller.start().catch(err => {
-      console.error(`[account:${creds.normalizedId}] Poll loop crashed:`, err.message);
-    });
+      token: creds.token,
+      baseUrl: creds.baseUrl,
+    }, opts.onMessages, client);
 
     return creds.normalizedId;
   }
@@ -133,10 +103,28 @@ export class AccountManager extends EventEmitter {
   async removeAccount(normalizedId) {
     const entry = this.#accounts.get(normalizedId);
     if (entry) {
-      entry.poller.stop();
-      this.#accounts.delete(normalizedId);
+      this.#stopAccount(normalizedId, entry);
     }
     await this.#store.removeAccount(normalizedId);
+  }
+
+  /**
+   * Reconcile running pollers with the account store.
+   * Starts newly added accounts, stops removed accounts, and restarts changed credentials.
+   * @param {(msgs: object[], accountId: string) => void} onMessages
+   * @returns {Promise<{started: number, stopped: number, restarted: number, active: number}>}
+   */
+  async reconcile(onMessages) {
+    if (this.#reconcilePromise) {
+      return this.#reconcilePromise;
+    }
+
+    this.#reconcilePromise = this.#reconcile(onMessages);
+    try {
+      return await this.#reconcilePromise;
+    } finally {
+      this.#reconcilePromise = null;
+    }
   }
 
   /**
@@ -174,6 +162,83 @@ export class AccountManager extends EventEmitter {
    * Context tokens are managed externally (in the bridge layer)
    * since they come from inbound messages.
    */
+
+  async #reconcile(onMessages) {
+    const desiredAccounts = await this.#store.loadAllAccounts();
+    const desiredMap = new Map(desiredAccounts.map((acct) => [acct.normalizedId, acct]));
+
+    let started = 0;
+    let stopped = 0;
+    let restarted = 0;
+
+    for (const [normalizedId, entry] of this.#accounts) {
+      const desired = desiredMap.get(normalizedId);
+      if (!desired) {
+        this.#stopAccount(normalizedId, entry);
+        stopped += 1;
+        continue;
+      }
+
+      const rawAccountId = desired.accountId || desired.normalizedId;
+      const changed =
+        entry.accountId !== rawAccountId ||
+        entry.token !== desired.token ||
+        entry.baseUrl !== desired.baseUrl;
+
+      if (changed) {
+        this.#stopAccount(normalizedId, entry);
+        this.#startAccount(desired, onMessages);
+        restarted += 1;
+      }
+    }
+
+    for (const acct of desiredAccounts) {
+      if (this.#accounts.has(acct.normalizedId)) continue;
+      this.#startAccount(acct, onMessages);
+      started += 1;
+    }
+
+    return {
+      started,
+      stopped,
+      restarted,
+      active: this.#accounts.size,
+    };
+  }
+
+  #startAccount(acct, onMessages, existingClient = null) {
+    const client = existingClient || new WeChatApiClient({
+      token: acct.token,
+      baseUrl: acct.baseUrl,
+    });
+
+    if (!existingClient) {
+      client.setToken(acct.token);
+      client.setBaseUrl(acct.baseUrl);
+    }
+
+    const rawAccountId = acct.accountId || acct.normalizedId;
+    const poller = this.#createPoller(client, rawAccountId, acct.normalizedId, onMessages);
+
+    this.#accounts.set(acct.normalizedId, {
+      client,
+      poller,
+      state: 'active',
+      accountId: rawAccountId,
+      token: acct.token,
+      baseUrl: acct.baseUrl,
+    });
+
+    poller.start().catch((err) => {
+      console.error(`[account:${acct.normalizedId}] Poll loop crashed:`, err.message);
+    });
+  }
+
+  #stopAccount(normalizedId, entry) {
+    entry.poller.stop();
+    entry.state = 'disconnected';
+    this.#accounts.delete(normalizedId);
+  }
 
   #createPoller(client, accountId, normalizedId, onMessages) {
     const poller = new Poller({

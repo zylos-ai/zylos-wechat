@@ -8,22 +8,77 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const DATA_DIR = join(homedir(), 'zylos/components/wechat');
+function resolveHomePath(p) {
+  if (!p) return p;
+  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
+  return p;
+}
+
+const DATA_DIR = resolveHomePath(
+  process.env.ZYLOS_WECHAT_DATA_DIR || join(homedir(), 'zylos/components/wechat')
+);
 const configPath = join(DATA_DIR, 'config.json');
+const DEFAULT_API_BASE = 'https://ilinkai.weixin.qq.com';
+const DEFAULT_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
+const DEFAULT_C4_RECEIVE_SCRIPT = '~/.claude/skills/comm-bridge/scripts/c4-receive.js';
 
 if (existsSync(configPath)) {
   try {
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
-
-    // Add any new config fields with defaults
     let changed = false;
 
-    if (config.dmPolicy === undefined) {
-      config.dmPolicy = 'open';
+    if (config.logLevel === undefined) {
+      config.logLevel = 'info';
       changed = true;
     }
+
     if (config.dmAllowFrom === undefined) {
-      config.dmAllowFrom = [];
+      const legacyAllow = Array.isArray(config.dmAllowlist)
+        ? config.dmAllowlist
+        : typeof config.dmAllowlist === 'string'
+          ? config.dmAllowlist.split(',').map((s) => s.trim()).filter(Boolean)
+          : [];
+      config.dmAllowFrom = legacyAllow;
+      changed = true;
+    }
+
+    if (config.dmPolicy === undefined) {
+      config.dmPolicy = config.dmAllowFrom.length > 0 ? 'allowlist' : 'open';
+      changed = true;
+    }
+
+    if (!config.wechat || typeof config.wechat !== 'object') {
+      config.wechat = {};
+      changed = true;
+    }
+
+    if (config.wechat.apiBase === undefined) {
+      config.wechat.apiBase = DEFAULT_API_BASE;
+      changed = true;
+    }
+
+    if (config.wechat.cdnBaseUrl === undefined) {
+      config.wechat.cdnBaseUrl = DEFAULT_CDN_BASE_URL;
+      changed = true;
+    }
+
+    if (!config.c4 || typeof config.c4 !== 'object') {
+      config.c4 = {};
+      changed = true;
+    }
+
+    if (config.c4.receiveScript === undefined) {
+      config.c4.receiveScript = config.c4ReceiveScript || DEFAULT_C4_RECEIVE_SCRIPT;
+      changed = true;
+    }
+
+    if (config.dmAllowlist !== undefined) {
+      delete config.dmAllowlist;
+      changed = true;
+    }
+
+    if (config.c4ReceiveScript !== undefined) {
+      delete config.c4ReceiveScript;
       changed = true;
     }
 
@@ -35,7 +90,6 @@ if (existsSync(configPath)) {
     }
   } catch (err) {
     console.error('  ✗ config migration failed:', err.message);
-    // Non-fatal — don't exit(1) for config migration
   }
 } else {
   console.log('  ○ no config.json found');

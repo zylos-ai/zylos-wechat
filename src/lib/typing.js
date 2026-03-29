@@ -8,13 +8,14 @@
 
 const CONFIG_CACHE_TTL = 24 * 60 * 60_000; // 24 hours
 const TYPING_REFRESH_INTERVAL = 5_000; // 5 seconds
+const MAX_TYPING_LIFETIME_MS = 2 * 60_000; // 2 minutes
 const CONFIG_RETRY_BASE = 2_000; // 2s initial retry
 const CONFIG_RETRY_MAX = 60 * 60_000; // 1h max retry
 
 export class TypingManager {
   #client;
-  #configCache = new Map(); // userId → { typingTicket, expiresAt, retryDelay }
-  #activeTimers = new Map(); // userId → intervalId
+  #configCache = new Map(); // userId -> { typingTicket, expiresAt, retryDelay }
+  #activeTimers = new Map(); // userId -> { refreshTimer, stopTimer }
 
   /**
    * @param {import('./api-client.js').WeChatApiClient} client
@@ -40,8 +41,7 @@ export class TypingManager {
       if (resp.ret === 0 || resp.ret === undefined) {
         const ticket = resp.typing_ticket;
         if (ticket) {
-          // Randomize TTL within 24h window to avoid thundering herd
-          const jitter = Math.random() * 60 * 60_000; // up to 1h jitter
+          const jitter = Math.random() * 60 * 60_000;
           this.#configCache.set(userId, {
             typingTicket: ticket,
             expiresAt: Date.now() + CONFIG_CACHE_TTL - jitter,
@@ -51,8 +51,7 @@ export class TypingManager {
         }
       }
       return null;
-    } catch (err) {
-      // Exponential backoff on failure
+    } catch {
       const entry = this.#configCache.get(userId);
       const retryDelay = entry?.retryDelay || CONFIG_RETRY_BASE;
       this.#configCache.set(userId, {
@@ -71,32 +70,33 @@ export class TypingManager {
    * @param {string} [contextToken]
    */
   async startTyping(userId, contextToken) {
-    // Stop any existing typing for this user
-    this.stopTyping(userId);
+    await this.stopTyping(userId);
 
     const ticket = await this.getTypingTicket(userId, contextToken);
     if (!ticket) return;
 
-    // Send initial typing
     try {
       await this.#client.sendTyping(userId, ticket, 1);
     } catch {
-      // Non-critical — don't block on typing failures
+      // Non-critical
     }
 
-    // Set up refresh interval
-    const timer = setInterval(async () => {
+    const refreshTimer = setInterval(async () => {
       try {
-        const t = await this.getTypingTicket(userId, contextToken);
-        if (t) {
-          await this.#client.sendTyping(userId, t, 1);
+        const currentTicket = await this.getTypingTicket(userId, contextToken);
+        if (currentTicket) {
+          await this.#client.sendTyping(userId, currentTicket, 1);
         }
       } catch {
-        // Silent failure for typing refresh
+        // Non-critical
       }
     }, TYPING_REFRESH_INTERVAL);
 
-    this.#activeTimers.set(userId, timer);
+    const stopTimer = setTimeout(() => {
+      this.stopTyping(userId).catch(() => {});
+    }, MAX_TYPING_LIFETIME_MS);
+
+    this.#activeTimers.set(userId, { refreshTimer, stopTimer });
   }
 
   /**
@@ -104,13 +104,13 @@ export class TypingManager {
    * @param {string} userId
    */
   async stopTyping(userId) {
-    const timer = this.#activeTimers.get(userId);
-    if (timer) {
-      clearInterval(timer);
+    const timers = this.#activeTimers.get(userId);
+    if (timers) {
+      clearInterval(timers.refreshTimer);
+      clearTimeout(timers.stopTimer);
       this.#activeTimers.delete(userId);
     }
 
-    // Send cancel typing
     const ticket = this.#configCache.get(userId)?.typingTicket;
     if (ticket) {
       try {
@@ -126,7 +126,7 @@ export class TypingManager {
    */
   stopAll() {
     for (const [userId] of this.#activeTimers) {
-      this.stopTyping(userId);
+      this.stopTyping(userId).catch(() => {});
     }
   }
 }
