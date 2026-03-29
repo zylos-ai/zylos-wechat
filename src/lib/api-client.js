@@ -6,8 +6,19 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
-const PACKAGE_VERSION = '1.0.2';
+const PACKAGE_VERSION = (() => {
+  try {
+    const raw = readFileSync(new URL('../../package.json', import.meta.url), 'utf8');
+    return JSON.parse(raw).version || '0.1.0';
+  } catch {
+    return '0.1.0';
+  }
+})();
+const PROTOCOL_CHANNEL_VERSION = '1.0.2';
+const QR_STATUS_CLIENT_VERSION = '1';
+
 const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
 
@@ -15,21 +26,41 @@ const TIMEOUT_LONGPOLL = 35_000;
 const TIMEOUT_REGULAR = 15_000;
 const TIMEOUT_LIGHTWEIGHT = 10_000;
 
-/**
- * Generate a random X-WECHAT-UIN header value.
- * Format: base64(decimal-string(random-uint32))
- */
 function generateUin() {
   const buf = randomBytes(4);
   const num = buf.readUInt32BE(0);
   return Buffer.from(String(num)).toString('base64');
 }
 
+function createAbortContext(timeout, externalSignal) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  let onAbort = null;
+  if (externalSignal) {
+    onAbort = () => controller.abort();
+    if (externalSignal.aborted) {
+      onAbort();
+    } else {
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      if (externalSignal && onAbort) {
+        externalSignal.removeEventListener('abort', onAbort);
+      }
+    },
+  };
+}
+
 export class WeChatApiClient {
   #token;
   #baseUrl;
   #cdnBaseUrl;
-  #uin;
 
   /**
    * @param {object} opts
@@ -41,7 +72,6 @@ export class WeChatApiClient {
     this.#token = opts.token || null;
     this.#baseUrl = opts.baseUrl || DEFAULT_BASE_URL;
     this.#cdnBaseUrl = opts.cdnBaseUrl || DEFAULT_CDN_URL;
-    this.#uin = generateUin();
   }
 
   get baseUrl() { return this.#baseUrl; }
@@ -59,60 +89,55 @@ export class WeChatApiClient {
    * @param {Record<string, string>} [opts.extra] - Additional headers
    */
   #headers(opts = {}) {
-    const h = {
+    const headers = {
       'Content-Type': 'application/json',
       'AuthorizationType': 'ilink_bot_token',
-      'X-WECHAT-UIN': this.#uin,
+      'X-WECHAT-UIN': generateUin(),
+      'iLink-App-ClientVersion': opts.clientVersion || PACKAGE_VERSION,
     };
+
     if (this.#token && !opts.noAuth) {
-      h['Authorization'] = `Bearer ${this.#token}`;
+      headers.Authorization = `Bearer ${this.#token}`;
     }
+
     if (opts.extra) {
-      Object.assign(h, opts.extra);
+      Object.assign(headers, opts.extra);
     }
-    return h;
+
+    return headers;
   }
 
   /**
    * Make an API POST request.
-   * @param {string} path - API path (e.g. '/ilink/bot/sendmessage')
-   * @param {object} body - Request body (base_info is auto-injected)
+   * @param {string} path
+   * @param {object} body
    * @param {object} [opts]
-   * @param {number} [opts.timeout] - Request timeout in ms
-   * @param {AbortSignal} [opts.signal] - External abort signal
-   * @returns {Promise<object>} Parsed JSON response
+   * @param {number} [opts.timeout]
+   * @param {AbortSignal} [opts.signal]
+   * @returns {Promise<object>}
    */
   async post(path, body, opts = {}) {
     const timeout = opts.timeout || TIMEOUT_REGULAR;
     const url = `${this.#baseUrl}${path}`;
-
     const payload = {
       ...body,
-      base_info: { channel_version: PACKAGE_VERSION },
+      base_info: {
+        channel_version: PROTOCOL_CHANNEL_VERSION,
+        ...(body.base_info || {}),
+      },
     };
     const jsonBody = JSON.stringify(payload);
-
     const headers = this.#headers();
     headers['Content-Length'] = String(Buffer.byteLength(jsonBody, 'utf8'));
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-
-    // Chain external signal if provided
-    if (opts.signal) {
-      if (opts.signal.aborted) {
-        controller.abort();
-      } else {
-        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
-      }
-    }
+    const abort = createAbortContext(timeout, opts.signal);
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers,
         body: jsonBody,
-        signal: controller.signal,
+        signal: abort.signal,
       });
 
       if (!res.ok) {
@@ -122,7 +147,7 @@ export class WeChatApiClient {
 
       return await res.json();
     } finally {
-      clearTimeout(timer);
+      abort.cleanup();
     }
   }
 
@@ -132,36 +157,22 @@ export class WeChatApiClient {
    * @param {object} [opts]
    * @param {number} [opts.timeout]
    * @param {Record<string, string>} [opts.extraHeaders]
-   * @param {AbortSignal} [opts.signal] - External abort signal
+   * @param {AbortSignal} [opts.signal]
    */
   async get(path, opts = {}) {
     const timeout = opts.timeout || TIMEOUT_REGULAR;
     const url = `${this.#baseUrl}${path}`;
-
-    const headers = {
-      'X-WECHAT-UIN': this.#uin,
-    };
-    if (opts.extraHeaders) {
-      Object.assign(headers, opts.extraHeaders);
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-
-    // Chain external signal if provided
-    if (opts.signal) {
-      if (opts.signal.aborted) {
-        controller.abort();
-      } else {
-        opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
-      }
-    }
+    const abort = createAbortContext(timeout, opts.signal);
 
     try {
       const res = await fetch(url, {
         method: 'GET',
-        headers,
-        signal: controller.signal,
+        headers: this.#headers({
+          noAuth: true,
+          clientVersion: opts.clientVersion,
+          extra: opts.extraHeaders,
+        }),
+        signal: abort.signal,
       });
 
       if (!res.ok) {
@@ -171,7 +182,7 @@ export class WeChatApiClient {
 
       return await res.json();
     } finally {
-      clearTimeout(timer);
+      abort.cleanup();
     }
   }
 
@@ -179,18 +190,18 @@ export class WeChatApiClient {
 
   /**
    * Long-poll for updates.
-   * @param {string} getUpdatesBuf - Opaque cursor (empty string on first call)
+   * @param {string} getUpdatesBuf
    * @param {AbortSignal} [signal]
    */
   async getUpdates(getUpdatesBuf, signal) {
     return this.post('/ilink/bot/getupdates', {
       get_updates_buf: getUpdatesBuf || '',
-    }, { timeout: TIMEOUT_LONGPOLL + 5_000, signal }); // extra 5s beyond server timeout
+    }, { timeout: TIMEOUT_LONGPOLL + 5_000, signal });
   }
 
   /**
    * Send a message.
-   * @param {object} msg - Full message object
+   * @param {object} msg
    */
   async sendMessage(msg) {
     return this.post('/ilink/bot/sendmessage', { msg });
@@ -210,8 +221,8 @@ export class WeChatApiClient {
   /**
    * Send typing indicator.
    * @param {string} userId
-   * @param {string} typingTicket - From getConfig response
-   * @param {number} [status=1] - 1=typing, 2=cancel
+   * @param {string} typingTicket
+   * @param {number} [status=1]
    */
   async sendTyping(userId, typingTicket, status = 1) {
     return this.post('/ilink/bot/sendtyping', {
@@ -247,7 +258,7 @@ export class WeChatApiClient {
     const encoded = encodeURIComponent(qrcodeToken);
     return this.get(`/ilink/bot/get_qrcode_status?qrcode=${encoded}`, {
       timeout: TIMEOUT_LONGPOLL + 5_000,
-      extraHeaders: { 'iLink-App-ClientVersion': '1' },
+      clientVersion: QR_STATUS_CLIENT_VERSION,
       signal,
     });
   }
@@ -256,23 +267,21 @@ export class WeChatApiClient {
 
   /**
    * Upload encrypted file to CDN.
-   * @param {string} uploadParam - From getUploadUrl response
-   * @param {string} filekey - 32-char hex
-   * @param {Buffer} encryptedData - AES-128-ECB encrypted data
-   * @returns {Promise<string>} downloadParam (x-encrypted-param header)
+   * @param {string} uploadParam
+   * @param {string} filekey
+   * @param {Buffer} encryptedData
+   * @returns {Promise<string>}
    */
   async cdnUpload(uploadParam, filekey, encryptedData) {
     const url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_REGULAR);
+    const abort = createAbortContext(TIMEOUT_REGULAR);
 
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: encryptedData,
-        signal: controller.signal,
+        signal: abort.signal,
       });
 
       if (!res.ok) {
@@ -286,45 +295,36 @@ export class WeChatApiClient {
 
       return downloadParam;
     } finally {
-      clearTimeout(timer);
+      abort.cleanup();
     }
   }
 
   /**
    * Download encrypted file from CDN.
    * @param {string} encryptQueryParam
-   * @returns {Promise<Buffer>} Encrypted data
+   * @returns {Promise<Buffer>}
    */
   async cdnDownload(encryptQueryParam) {
     const url = `${this.#cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_REGULAR);
+    const abort = createAbortContext(TIMEOUT_REGULAR);
 
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(url, { signal: abort.signal });
       if (!res.ok) {
         throw new ApiError(`CDN download failed: HTTP ${res.status}`, res.status);
       }
       return Buffer.from(await res.arrayBuffer());
     } finally {
-      clearTimeout(timer);
+      abort.cleanup();
     }
   }
 }
 
 export class ApiError extends Error {
-  constructor(message, statusCode) {
+  constructor(message, statusCode, details = null) {
     super(message);
     this.name = 'ApiError';
     this.statusCode = statusCode;
+    this.details = details;
   }
 }
-
-export {
-  DEFAULT_BASE_URL,
-  DEFAULT_CDN_URL,
-  TIMEOUT_LONGPOLL,
-  TIMEOUT_REGULAR,
-  TIMEOUT_LIGHTWEIGHT,
-};

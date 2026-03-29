@@ -10,14 +10,15 @@
  * so that scripts/send.js (a separate process) can read them.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const DEFAULT_MAX_ENTRIES = 10_000;
-const DEFAULT_TTL_MS = 24 * 60 * 60_000; // 24 hours
+const DEFAULT_TTL_MS = 24 * 60 * 60_000;
+const DEFAULT_PERSIST_DEBOUNCE_MS = 500;
 
 export class ContextTokenStore {
-  #tokens = new Map(); // "accountId:userId" → { token, updatedAt }
+  #tokens = new Map();
   #maxEntries;
   #ttlMs;
   #persistPath;
@@ -34,7 +35,6 @@ export class ContextTokenStore {
     this.#ttlMs = opts.ttlMs || DEFAULT_TTL_MS;
     this.#persistPath = opts.persistPath || null;
 
-    // Load from disk if persist path exists
     if (this.#persistPath) {
       this.#loadFromDisk();
     }
@@ -42,43 +42,54 @@ export class ContextTokenStore {
 
   /**
    * Build the key for a token entry.
-   * @param {string} accountId - Normalized account ID
-   * @param {string} userId - WeChat user ID
+   * @param {string} accountId
+   * @param {string} userId
    * @returns {string}
    */
   #key(accountId, userId) {
     return `${accountId}:${userId}`;
   }
 
+  #pruneExpired() {
+    const now = Date.now();
+    let removed = 0;
+
+    for (const [key, entry] of this.#tokens) {
+      if (now - entry.updatedAt > this.#ttlMs) {
+        this.#tokens.delete(key);
+        removed += 1;
+      }
+    }
+
+    return removed;
+  }
+
   /**
    * Update context token from an inbound message.
    * @param {string} accountId
-   * @param {string} userId - from_user_id of the inbound message
+   * @param {string} userId
    * @param {string} contextToken
    */
   set(accountId, userId, contextToken) {
     if (!contextToken) return;
 
-    const key = this.#key(accountId, userId);
-    this.#tokens.set(key, {
+    this.#tokens.set(this.#key(accountId, userId), {
       token: contextToken,
       updatedAt: Date.now(),
     });
 
-    // Evict oldest if over capacity
     if (this.#tokens.size > this.#maxEntries) {
       this.#evictOldest();
     }
 
-    // Debounced persist to disk
     this.#schedulePersist();
   }
 
   /**
    * Get context token for sending a message to a user.
    * @param {string} accountId
-   * @param {string} userId - to_user_id for the outbound message
-   * @returns {string | null} context_token or null if not available
+   * @param {string} userId
+   * @returns {string | null}
    */
   get(accountId, userId) {
     const key = this.#key(accountId, userId);
@@ -86,9 +97,9 @@ export class ContextTokenStore {
 
     if (!entry) return null;
 
-    // Check TTL
     if (Date.now() - entry.updatedAt > this.#ttlMs) {
       this.#tokens.delete(key);
+      this.#schedulePersist();
       return null;
     }
 
@@ -107,14 +118,38 @@ export class ContextTokenStore {
 
   /**
    * Remove expired entries.
+   * @returns {number} number of removed entries
    */
   cleanup() {
-    const now = Date.now();
-    for (const [key, entry] of this.#tokens) {
-      if (now - entry.updatedAt > this.#ttlMs) {
+    const removed = this.#pruneExpired();
+    if (removed > 0) {
+      this.#schedulePersist();
+    }
+    return removed;
+  }
+
+  /**
+   * Remove all tokens belonging to an account, including optional fallback IDs.
+   * @param {string} accountId
+   * @param {string[]} [fallbackAccountIds]
+   * @returns {number} number of removed entries
+   */
+  deleteAccount(accountId, fallbackAccountIds = []) {
+    const ids = new Set([accountId, ...fallbackAccountIds].filter(Boolean));
+    let removed = 0;
+
+    for (const key of this.#tokens.keys()) {
+      if ([...ids].some((id) => key.startsWith(`${id}:`))) {
         this.#tokens.delete(key);
+        removed += 1;
       }
     }
+
+    if (removed > 0) {
+      this.#schedulePersist();
+    }
+
+    return removed;
   }
 
   /**
@@ -148,45 +183,61 @@ export class ContextTokenStore {
 
   #loadFromDisk() {
     if (!this.#persistPath) return;
+
     try {
       const raw = readFileSync(this.#persistPath, 'utf8');
       const data = JSON.parse(raw);
-      if (data && typeof data === 'object') {
-        for (const [key, entry] of Object.entries(data)) {
-          if (entry.token && entry.updatedAt) {
-            // Skip expired entries on load
-            if (Date.now() - entry.updatedAt <= this.#ttlMs) {
-              this.#tokens.set(key, entry);
-            }
-          }
-        }
+
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return;
+      }
+
+      for (const [key, entry] of Object.entries(data)) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (typeof entry.token !== 'string') continue;
+        if (typeof entry.updatedAt !== 'number') continue;
+        if (Date.now() - entry.updatedAt > this.#ttlMs) continue;
+        this.#tokens.set(key, entry);
       }
     } catch {
-      // File doesn't exist or is corrupt — start fresh
+      // missing or corrupt file: start fresh
     }
   }
 
   #schedulePersist() {
-    if (!this.#persistPath) return;
+    if (!this.#persistPath || this.#persistTimer) return;
 
-    // Debounce: write at most every 500ms
-    if (this.#persistTimer) return;
     this.#persistTimer = setTimeout(() => {
       this.#persistTimer = null;
       this.#writeToDisk();
-    }, 500);
+    }, DEFAULT_PERSIST_DEBOUNCE_MS);
+
+    this.#persistTimer.unref?.();
   }
 
   #writeToDisk() {
     if (!this.#persistPath) return;
+
+    const tmpPath = `${this.#persistPath}.${process.pid}.${Date.now()}.tmp`;
+
     try {
+      this.#pruneExpired();
       mkdirSync(dirname(this.#persistPath), { recursive: true });
-      const obj = {};
+
+      const payload = {};
       for (const [key, entry] of this.#tokens) {
-        obj[key] = entry;
+        payload[key] = entry;
       }
-      writeFileSync(this.#persistPath, JSON.stringify(obj));
+
+      writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`);
+      chmodSync(tmpPath, 0o600);
+      renameSync(tmpPath, this.#persistPath);
     } catch (err) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // ignore tmp cleanup failures
+      }
       console.error('[context-tokens] persist failed:', err.message);
     }
   }

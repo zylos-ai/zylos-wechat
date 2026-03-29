@@ -4,7 +4,7 @@ version: 0.1.0
 description: >-
   WeChat (微信) communication channel for Zylos. Use when: (1) replying to WeChat
   messages (DM), (2) sending proactive messages or media (images, files) to WeChat
-  users, (3) managing DM access control (dmPolicy, allowFrom), (4) managing WeChat
+  users, (3) managing DM access control (dmPolicy, dmAllowFrom), (4) managing WeChat
   account login via QR code, (5) troubleshooting WeChat connection or polling issues.
   Config at ~/zylos/components/wechat/config.json. Service: pm2 zylos-wechat.
 type: communication
@@ -32,14 +32,17 @@ upgrade:
 config:
   required: []
   optional:
+    - name: ZYLOS_WECHAT_DATA_DIR
+      description: Override component data directory
+      default: "~/zylos/components/wechat"
     - name: ZYLOS_WECHAT_ENABLED
-      description: Enable/disable the component
+      description: Optional env override for config.enabled
       default: "true"
     - name: ZYLOS_WECHAT_LOG_LEVEL
-      description: Log level (debug, info, warn, error)
+      description: Optional env override for config.logLevel
       default: "info"
     - name: ZYLOS_WECHAT_DM_ALLOWLIST
-      description: Comma-separated WeChat user IDs to allow DMs from (empty = allow all)
+      description: Legacy env override for config.dmAllowFrom (implies dmPolicy=allowlist when non-empty)
       default: ""
 
 dependencies:
@@ -52,16 +55,54 @@ WeChat personal account integration via the iLink Bot API.
 
 ## Account Login
 
-Accounts are added via QR code scan. The service must be running, then trigger login via admin CLI (TBD) or restart with no accounts configured.
+```bash
+npm run admin -- login
+```
+
+The command prints a QR URL. Open it with WeChat and confirm login. If the service is running, it should pick up the new account within about 10 seconds.
+
+## Admin CLI
+
+```bash
+npm run admin -- show
+npm run admin -- list-accounts
+npm run admin -- remove-account <normalized_id>
+npm run admin -- set-dm-policy <open|allowlist>
+npm run admin -- list-dm-allow
+npm run admin -- add-dm-allow <wechat_user_id>
+npm run admin -- remove-dm-allow <wechat_user_id>
+```
+
+## Config
+
+Primary config: `~/zylos/components/wechat/config.json`
+
+```json
+{
+  "enabled": true,
+  "logLevel": "info",
+  "dmPolicy": "open",
+  "dmAllowFrom": [],
+  "wechat": {
+    "apiBase": "https://ilinkai.weixin.qq.com",
+    "cdnBaseUrl": "https://novac2c.cdn.weixin.qq.com/c2c"
+  },
+  "c4": {
+    "receiveScript": "~/.claude/skills/comm-bridge/scripts/c4-receive.js"
+  }
+}
+```
+
+Environment variables are optional overrides on top of `config.json`, not the primary source of truth.
 
 ## Send Message
 
 ```bash
 # Text
-echo "hello" | node scripts/send.js "<account_id>|to:<wechat_user_id>"
+echo "hello" | node scripts/send.js "<normalized_account_id>|to:<wechat_user_id>"
 
 # Media
-echo "[MEDIA:image]/path/to/photo.png" | node scripts/send.js "<account_id>|to:<wechat_user_id>"
+echo "[MEDIA:image]/path/to/photo.png" | node scripts/send.js "<normalized_account_id>|to:<wechat_user_id>"
 ```
 
 ## Architecture

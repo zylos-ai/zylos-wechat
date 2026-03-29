@@ -1,55 +1,50 @@
 #!/usr/bin/env node
 import { join } from 'node:path';
-import { config, ensureDirs, paths } from './lib/config.js';
+import { ensureDirs, getConfig, paths, stopWatching, watchConfig } from './lib/config.js';
 import { createLogger } from './lib/logger.js';
 import { sendToC4 } from './lib/bridge.js';
 import { AccountManager } from './lib/account-manager.js';
 import { ContextTokenStore } from './lib/context-tokens.js';
 import { TypingManager } from './lib/typing.js';
 
-const logger = createLogger(config.logLevel);
+let runtimeConfig = getConfig();
+let logger = createLogger(runtimeConfig.logLevel);
 
-if (!config.enabled) {
+if (!runtimeConfig.enabled) {
   logger.info('component disabled by config');
   process.exit(0);
 }
 
 ensureDirs();
 
-// --- Core state ---
-
 const dataDir = paths.dataDir;
 const manager = new AccountManager(dataDir);
 const contextTokens = new ContextTokenStore({
   persistPath: join(dataDir, 'context-tokens.json'),
 });
-const typingManagers = new Map(); // normalizedId → TypingManager
+const typingManagers = new Map(); // raw accountId -> TypingManager
 
-// In-memory dedupe set (msg_id + account, with max size)
 const seenMessages = new Set();
 const DEDUPE_MAX = 10_000;
+const ACCOUNT_RECONCILE_INTERVAL_MS = 10_000;
+let shuttingDown = false;
+let reconcileTimer = null;
 
 function markSeen(key) {
   seenMessages.add(key);
   if (seenMessages.size > DEDUPE_MAX) {
-    // Evict oldest entries (Sets iterate in insertion order)
-    const iter = seenMessages.values();
-    for (let i = 0; i < 1000; i++) iter.next();
-    const keep = new Set();
-    for (const v of seenMessages) {
-      if (keep.size >= seenMessages.size - 1000) break;
-      // skip first 1000
-    }
-    // Simpler: just rebuild from array tail
-    const arr = [...seenMessages];
+    const recent = [...seenMessages].slice(-Math.floor(DEDUPE_MAX * 0.9));
     seenMessages.clear();
-    for (const v of arr.slice(-DEDUPE_MAX + 1000)) {
-      seenMessages.add(v);
+    for (const value of recent) {
+      seenMessages.add(value);
     }
   }
 }
 
-// --- Message handling ---
+function isDmAllowed(userId) {
+  if (runtimeConfig.dmPolicy !== 'allowlist') return true;
+  return runtimeConfig.dmAllowFrom.includes(userId);
+}
 
 function extractText(msg) {
   if (!msg.item_list || msg.item_list.length === 0) return '';
@@ -61,23 +56,9 @@ function extractText(msg) {
   return '';
 }
 
-function detectMessageType(msg) {
-  if (!msg.item_list || msg.item_list.length === 0) return 'text';
-  for (const item of msg.item_list) {
-    if (item.type === 2 && item.image_item) return 'image';
-    if (item.type === 5 && item.video_item) return 'video';
-    if (item.type === 4 && item.file_item) return 'file';
-    if (item.type === 3 && item.voice_item) return 'voice';
-  }
-  return 'text';
-}
-
 async function handleMessages(msgs, accountId, normalizedId) {
   for (const msg of msgs) {
-    // Skip bot messages (message_type 2 = bot)
     if (msg.message_type === 2) continue;
-
-    // Skip non-finished messages (message_state 2 = finish)
     if (msg.message_state !== undefined && msg.message_state !== 2) continue;
 
     const msgId = String(msg.message_id || msg.seq || '');
@@ -88,27 +69,20 @@ async function handleMessages(msgs, accountId, normalizedId) {
 
     const fromUserId = msg.from_user_id || '';
 
-    // Update context token cache (keyed by normalizedId for send.js compat)
     if (msg.context_token && fromUserId) {
       contextTokens.set(normalizedId, fromUserId, msg.context_token);
     }
 
-    // DM allowlist check
-    if (config.dmAllowlist.length > 0 && !config.dmAllowlist.includes(fromUserId)) {
+    if (!isDmAllowed(fromUserId)) {
       logger.debug('drop from non-allowlisted user:', fromUserId);
       markSeen(dedupeKey);
       continue;
     }
 
     const text = extractText(msg);
-    const rawType = detectMessageType(msg);
-    // Use normalizedId as endpoint — send.js uses this to load credentials
-    const endpoint = normalizedId;
-
-    // Format for C4 dispatch
+    const endpoint = fromUserId ? `${normalizedId}|to:${fromUserId}` : normalizedId;
     const content = `[WeChat DM] ${fromUserId} said: ${text}`;
 
-    // Start typing indicator (non-blocking — indicates processing to sender)
     const typingMgr = typingManagers.get(accountId);
     if (typingMgr && fromUserId) {
       typingMgr.startTyping(fromUserId, msg.context_token).catch(() => {});
@@ -116,7 +90,7 @@ async function handleMessages(msgs, accountId, normalizedId) {
 
     try {
       await sendToC4({
-        scriptPath: config.c4ReceiveScript,
+        scriptPath: runtimeConfig.c4ReceiveScript,
         channel: 'wechat',
         endpoint,
         content,
@@ -124,7 +98,6 @@ async function handleMessages(msgs, accountId, normalizedId) {
       });
     } catch (err) {
       logger.error('C4 dispatch failed:', err.message);
-      // Stop typing on dispatch failure
       if (typingMgr && fromUserId) {
         typingMgr.stopTyping(fromUserId).catch(() => {});
       }
@@ -134,11 +107,20 @@ async function handleMessages(msgs, accountId, normalizedId) {
   }
 }
 
-// --- Lifecycle ---
-
 async function main() {
   logger.info('zylos-wechat starting...');
   logger.info('data dir:', dataDir);
+
+  watchConfig((nextConfig) => {
+    runtimeConfig = nextConfig;
+    logger = createLogger(runtimeConfig.logLevel);
+    logger.info('config reloaded');
+
+    if (!runtimeConfig.enabled) {
+      logger.info('component disabled in config, shutting down');
+      shutdown('CONFIG_DISABLED');
+    }
+  });
 
   await manager.init();
 
@@ -147,19 +129,18 @@ async function main() {
   });
 
   manager.on('session-expired', (acctId) => {
-    logger.warn(`[${acctId}] session expired — paused for 60 minutes`);
+    logger.warn(`[${acctId}] session expired - paused for 60 minutes`);
   });
 
   manager.on('connected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling started`);
-    // Create TypingManager keyed by raw accountId (matches handleMessages)
     const client = manager.getClient(normalizedId);
     if (client) {
       typingManagers.set(acctId, new TypingManager(client));
     }
   });
 
-  manager.on('disconnected', (acctId, normalizedId) => {
+  manager.on('disconnected', (acctId) => {
     logger.info(`[${acctId}] polling stopped`);
     const typingMgr = typingManagers.get(acctId);
     if (typingMgr) {
@@ -168,20 +149,41 @@ async function main() {
     }
   });
 
-  // Start all saved accounts
   await manager.startAll(handleMessages);
+
+  reconcileTimer = setInterval(() => {
+    if (shuttingDown) return;
+
+    manager.reconcile(handleMessages).catch((err) => {
+      logger.error('account reconcile failed:', err.message);
+    });
+  }, ACCOUNT_RECONCILE_INTERVAL_MS);
+  reconcileTimer.unref?.();
 
   const accounts = manager.listAccounts();
   if (accounts.length === 0) {
-    logger.info('no accounts configured — waiting for QR login via admin CLI');
+    logger.info('no accounts configured - waiting for QR login via admin CLI');
   } else {
     logger.info(`${accounts.length} account(s) active`);
   }
 }
 
 function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
   logger.info(`received ${sig}, shutting down...`);
+  stopWatching();
+  if (reconcileTimer) {
+    clearInterval(reconcileTimer);
+    reconcileTimer = null;
+  }
   contextTokens.flush();
+
+  for (const typingMgr of typingManagers.values()) {
+    typingMgr.stopAll();
+  }
+
   manager.stopAll().then(() => {
     logger.info('all pollers stopped');
     process.exit(0);
@@ -189,14 +191,13 @@ function shutdown(sig) {
     process.exit(1);
   });
 
-  // Force exit after 5s
   setTimeout(() => process.exit(0), 5_000);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-main().catch(err => {
+main().catch((err) => {
   logger.error('fatal:', err.message);
   process.exit(1);
 });
