@@ -6,6 +6,33 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), 'zylos/components/wechat');
+const DEFAULT_C4_RECEIVE_RELATIVE = '.claude/skills/comm-bridge/scripts/c4-receive.js';
+
+function c4ReceiveScriptCandidates() {
+  return [
+    path.join(os.homedir(), DEFAULT_C4_RECEIVE_RELATIVE),
+    path.join(os.homedir(), 'zylos', DEFAULT_C4_RECEIVE_RELATIVE),
+    path.resolve(process.cwd(), DEFAULT_C4_RECEIVE_RELATIVE),
+    path.resolve(process.cwd(), '..', DEFAULT_C4_RECEIVE_RELATIVE),
+    path.resolve(process.cwd(), '..', '..', DEFAULT_C4_RECEIVE_RELATIVE),
+  ];
+}
+
+function detectExistingC4ReceiveScript() {
+  for (const candidate of c4ReceiveScriptCandidates()) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return c4ReceiveScriptCandidates()[0];
+}
+
+function resolveC4ReceiveScript(preferredPath) {
+  const preferred = resolveHomePath(preferredPath);
+  if (preferred && fs.existsSync(preferred)) {
+    return preferred;
+  }
+  return detectExistingC4ReceiveScript();
+}
+
 const DEFAULT_CONFIG = {
   enabled: true,
   logLevel: 'info',
@@ -16,7 +43,7 @@ const DEFAULT_CONFIG = {
     cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
   },
   c4: {
-    receiveScript: '~/.claude/skills/comm-bridge/scripts/c4-receive.js',
+    receiveScript: detectExistingC4ReceiveScript(),
   },
 };
 
@@ -116,7 +143,7 @@ function normalizeConfig(candidate = {}) {
     merged.dmAllowFrom !== undefined ? merged.dmAllowFrom : merged.dmAllowlist
   );
   const dmPolicy = merged.dmPolicy === 'allowlist' ? 'allowlist' : 'open';
-  const c4ReceiveScript = resolveHomePath(
+  const c4ReceiveScript = resolveC4ReceiveScript(
     merged.c4?.receiveScript || merged.c4ReceiveScript || DEFAULT_CONFIG.c4.receiveScript
   );
 

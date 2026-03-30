@@ -8,10 +8,28 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+const C4_RECEIVE_RELATIVE = '.claude/skills/comm-bridge/scripts/c4-receive.js';
+
 function resolveHomePath(p) {
   if (!p) return p;
   if (p.startsWith('~/')) return join(homedir(), p.slice(2));
   return p;
+}
+
+function detectC4ReceiveScript() {
+  const candidates = [
+    join(homedir(), C4_RECEIVE_RELATIVE),
+    join(homedir(), 'zylos', C4_RECEIVE_RELATIVE),
+    join(process.cwd(), C4_RECEIVE_RELATIVE),
+    join(process.cwd(), '..', C4_RECEIVE_RELATIVE),
+    join(process.cwd(), '..', '..', C4_RECEIVE_RELATIVE),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return candidates[0];
 }
 
 const DATA_DIR = resolveHomePath(
@@ -42,7 +60,7 @@ if (!existsSync(configPath)) {
       cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
     },
     c4: {
-      receiveScript: '~/.claude/skills/comm-bridge/scripts/c4-receive.js',
+      receiveScript: detectC4ReceiveScript(),
     },
   };
   writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));

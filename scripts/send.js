@@ -3,6 +3,7 @@
  * Outbound send script for zylos-wechat.
  *
  * Called by C4 comm-bridge via c4-send.js:
+ *   node scripts/send.js <endpoint_id> "<message>"
  *   echo "message" | node scripts/send.js <endpoint_id>
  *
  * Or directly:
@@ -59,9 +60,10 @@ async function main() {
       to = endpointArg;
     }
 
-    text = await readStdin();
+    const messageArg = process.argv.slice(3).join(' ').trim();
+    text = messageArg || await readStdin();
     if (!text) {
-      console.error('No message on stdin');
+      console.error('No message provided (expected argv[3] or stdin)');
       process.exit(1);
     }
   } else {
@@ -73,6 +75,7 @@ async function main() {
 
   if (!to || !text) {
     console.error('Usage:');
+    console.error('  node scripts/send.js <endpoint_id> "<message>"');
     console.error('  echo "message" | node scripts/send.js <endpoint_id>');
     console.error('  node scripts/send.js --to <wechat_id> --text <message> --context-token <token> [--account <normalized_id>]');
     process.exit(1);

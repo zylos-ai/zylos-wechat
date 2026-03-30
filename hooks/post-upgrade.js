@@ -8,10 +8,34 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+const C4_RECEIVE_RELATIVE = '.claude/skills/comm-bridge/scripts/c4-receive.js';
+
 function resolveHomePath(p) {
   if (!p) return p;
   if (p.startsWith('~/')) return join(homedir(), p.slice(2));
   return p;
+}
+
+function detectC4ReceiveScript() {
+  const candidates = [
+    join(homedir(), C4_RECEIVE_RELATIVE),
+    join(homedir(), 'zylos', C4_RECEIVE_RELATIVE),
+    join(process.cwd(), C4_RECEIVE_RELATIVE),
+    join(process.cwd(), '..', C4_RECEIVE_RELATIVE),
+    join(process.cwd(), '..', '..', C4_RECEIVE_RELATIVE),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return candidates[0];
+}
+
+function resolveC4ReceiveScript(value) {
+  const preferred = resolveHomePath(value);
+  if (preferred && existsSync(preferred)) return preferred;
+  return detectC4ReceiveScript();
 }
 
 const DATA_DIR = resolveHomePath(
@@ -20,7 +44,7 @@ const DATA_DIR = resolveHomePath(
 const configPath = join(DATA_DIR, 'config.json');
 const DEFAULT_API_BASE = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
-const DEFAULT_C4_RECEIVE_SCRIPT = '~/.claude/skills/comm-bridge/scripts/c4-receive.js';
+const DEFAULT_C4_RECEIVE_SCRIPT = detectC4ReceiveScript();
 
 if (existsSync(configPath)) {
   try {
@@ -69,6 +93,11 @@ if (existsSync(configPath)) {
 
     if (config.c4.receiveScript === undefined) {
       config.c4.receiveScript = config.c4ReceiveScript || DEFAULT_C4_RECEIVE_SCRIPT;
+      changed = true;
+    }
+    const currentReceiveScript = resolveC4ReceiveScript(config.c4.receiveScript);
+    if (config.c4.receiveScript !== currentReceiveScript) {
+      config.c4.receiveScript = currentReceiveScript;
       changed = true;
     }
 
