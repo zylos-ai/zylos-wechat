@@ -38,6 +38,11 @@ const DEFAULT_CONFIG = {
   logLevel: 'info',
   dmPolicy: 'open',
   dmAllowFrom: [],
+  admin: {
+    enabled: process.env.ZYLOS_WECHAT_ADMIN_ENABLED !== 'false',
+    host: process.env.ZYLOS_WECHAT_ADMIN_HOST || '127.0.0.1',
+    port: Number(process.env.ZYLOS_WECHAT_ADMIN_PORT || 17605),
+  },
   wechat: {
     apiBase: 'https://ilinkai.weixin.qq.com',
     cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
@@ -93,11 +98,13 @@ const dataDir = resolveHomePath(process.env.ZYLOS_WECHAT_DATA_DIR || DEFAULT_DAT
 export const paths = {
   dataDir: path.resolve(dataDir),
   accountsDir: path.resolve(dataDir, 'accounts'),
+  loginSessionsDir: path.resolve(dataDir, 'login-sessions'),
   logsDir: path.resolve(dataDir, 'logs'),
   mediaDir: path.resolve(dataDir, 'media'),
   configFile: path.resolve(dataDir, 'config.json'),
   stateFile: path.resolve(dataDir, 'state.json'),
   dedupeFile: path.resolve(dataDir, 'dedupe.json'),
+  adminTokenFile: path.resolve(dataDir, '.admin-token'),
 };
 
 export let config = null;
@@ -113,6 +120,26 @@ function buildEnvOverrides() {
 
   if (process.env.ZYLOS_WECHAT_LOG_LEVEL) {
     overrides.logLevel = process.env.ZYLOS_WECHAT_LOG_LEVEL;
+  }
+
+  if (
+    process.env.ZYLOS_WECHAT_ADMIN_ENABLED !== undefined ||
+    process.env.ZYLOS_WECHAT_ADMIN_HOST ||
+    process.env.ZYLOS_WECHAT_ADMIN_PORT
+  ) {
+    overrides.admin = {};
+    if (process.env.ZYLOS_WECHAT_ADMIN_ENABLED !== undefined) {
+      overrides.admin.enabled = process.env.ZYLOS_WECHAT_ADMIN_ENABLED !== 'false';
+    }
+    if (process.env.ZYLOS_WECHAT_ADMIN_HOST) {
+      overrides.admin.host = process.env.ZYLOS_WECHAT_ADMIN_HOST;
+    }
+    if (process.env.ZYLOS_WECHAT_ADMIN_PORT) {
+      const parsedPort = Number(process.env.ZYLOS_WECHAT_ADMIN_PORT);
+      if (Number.isFinite(parsedPort) && parsedPort > 0) {
+        overrides.admin.port = parsedPort;
+      }
+    }
   }
 
   if (process.env.ZYLOS_WECHAT_DM_ALLOWLIST !== undefined) {
@@ -154,6 +181,19 @@ function normalizeConfig(candidate = {}) {
     dmPolicy,
     dmAllowFrom,
     dmAllowlist: dmAllowFrom,
+    admin: {
+      enabled: merged.admin?.enabled !== false,
+      host:
+        typeof merged.admin?.host === 'string' && merged.admin.host
+          ? merged.admin.host
+          : DEFAULT_CONFIG.admin.host,
+      port:
+        typeof merged.admin?.port === 'number' &&
+        Number.isInteger(merged.admin.port) &&
+        merged.admin.port > 0
+          ? merged.admin.port
+          : DEFAULT_CONFIG.admin.port,
+    },
     wechat: {
       apiBase: merged.wechat?.apiBase || DEFAULT_CONFIG.wechat.apiBase,
       cdnBaseUrl: merged.wechat?.cdnBaseUrl || DEFAULT_CONFIG.wechat.cdnBaseUrl,
@@ -171,6 +211,11 @@ function serializableConfig(nextConfig = getConfig()) {
     logLevel: nextConfig.logLevel,
     dmPolicy: nextConfig.dmPolicy,
     dmAllowFrom: nextConfig.dmAllowFrom,
+    admin: {
+      enabled: nextConfig.admin?.enabled !== false,
+      host: nextConfig.admin?.host || DEFAULT_CONFIG.admin.host,
+      port: nextConfig.admin?.port || DEFAULT_CONFIG.admin.port,
+    },
     wechat: {
       apiBase: nextConfig.wechat.apiBase,
       cdnBaseUrl: nextConfig.wechat.cdnBaseUrl,
@@ -256,6 +301,7 @@ export function stopWatching() {
 export function ensureDirs() {
   fs.mkdirSync(paths.dataDir, { recursive: true });
   fs.mkdirSync(paths.accountsDir, { recursive: true });
+  fs.mkdirSync(paths.loginSessionsDir, { recursive: true });
   fs.mkdirSync(paths.logsDir, { recursive: true });
   fs.mkdirSync(paths.mediaDir, { recursive: true });
 }

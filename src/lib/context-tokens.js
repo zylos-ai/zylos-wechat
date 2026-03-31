@@ -153,6 +153,33 @@ export class ContextTokenStore {
   }
 
   /**
+   * Return the newest non-expired context token timestamp for an account.
+   * @param {string} accountId
+   * @param {string[]} [fallbackAccountIds]
+   * @returns {number | null}
+   */
+  latestTimestampForAccount(accountId, fallbackAccountIds = []) {
+    const ids = new Set([accountId, ...fallbackAccountIds].filter(Boolean));
+    if (ids.size === 0) {
+      return null;
+    }
+
+    const now = Date.now();
+    let latest = null;
+
+    for (const [key, entry] of this.#tokens) {
+      const prefix = key.split(':', 1)[0];
+      if (!ids.has(prefix)) continue;
+      if (now - entry.updatedAt > this.#ttlMs) continue;
+      if (latest === null || entry.updatedAt > latest) {
+        latest = entry.updatedAt;
+      }
+    }
+
+    return latest;
+  }
+
+  /**
    * Get store size.
    */
   get size() {

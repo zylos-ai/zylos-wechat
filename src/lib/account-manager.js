@@ -21,6 +21,7 @@ export class AccountManager extends EventEmitter {
   #store;
   #accounts = new Map(); // normalizedId → { client, poller, state, accountId }
   #reconcilePromise = null;
+  #onMessages = null;
 
   /**
    * @param {string} dataDir - Component data directory
@@ -45,6 +46,7 @@ export class AccountManager extends EventEmitter {
    * @param {(msgs: object[], accountId: string) => void} onMessages - Message handler
    */
   async startAll(onMessages) {
+    this.#onMessages = onMessages;
     const result = await this.reconcile(onMessages);
     console.log(`[account-manager] Started ${result.active} account(s)`);
   }
@@ -115,6 +117,9 @@ export class AccountManager extends EventEmitter {
    * @returns {Promise<{started: number, stopped: number, restarted: number, active: number}>}
    */
   async reconcile(onMessages) {
+    if (onMessages) {
+      this.#onMessages = onMessages;
+    }
     if (this.#reconcilePromise) {
       return this.#reconcilePromise;
     }
@@ -134,6 +139,13 @@ export class AccountManager extends EventEmitter {
    */
   getClient(normalizedId) {
     return this.#accounts.get(normalizedId)?.client || null;
+  }
+
+  async reconcileCurrent() {
+    if (!this.#onMessages) {
+      throw new Error('Account manager has not been initialized with a message handler');
+    }
+    return this.reconcile(this.#onMessages);
   }
 
   /**
@@ -254,14 +266,14 @@ export class AccountManager extends EventEmitter {
 
     poller.on('error', (err, acctId) => {
       console.error(`[account:${acctId}] Poll error:`, err.message);
-      this.emit('error', err, acctId);
+      this.emit('error', err, acctId, normalizedId);
     });
 
     poller.on('session-expired', (acctId) => {
       console.warn(`[account:${acctId}] Session expired — pausing for 60 minutes`);
       const entry = this.#accounts.get(normalizedId);
       if (entry) entry.state = 'session-expired';
-      this.emit('session-expired', acctId);
+      this.emit('session-expired', acctId, normalizedId);
     });
 
     poller.on('connected', (acctId) => {
