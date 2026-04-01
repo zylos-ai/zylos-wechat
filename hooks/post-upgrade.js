@@ -18,8 +18,8 @@ function resolveHomePath(p) {
 
 function detectC4ReceiveScript() {
   const candidates = [
-    join(homedir(), C4_RECEIVE_RELATIVE),
     join(homedir(), 'zylos', C4_RECEIVE_RELATIVE),
+    join(homedir(), C4_RECEIVE_RELATIVE),
     join(process.cwd(), C4_RECEIVE_RELATIVE),
     join(process.cwd(), '..', C4_RECEIVE_RELATIVE),
     join(process.cwd(), '..', '..', C4_RECEIVE_RELATIVE),

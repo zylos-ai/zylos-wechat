@@ -10,8 +10,8 @@ const DEFAULT_C4_RECEIVE_RELATIVE = '.claude/skills/comm-bridge/scripts/c4-recei
 
 function c4ReceiveScriptCandidates() {
   return [
-    path.join(os.homedir(), DEFAULT_C4_RECEIVE_RELATIVE),
     path.join(os.homedir(), 'zylos', DEFAULT_C4_RECEIVE_RELATIVE),
+    path.join(os.homedir(), DEFAULT_C4_RECEIVE_RELATIVE),
     path.resolve(process.cwd(), DEFAULT_C4_RECEIVE_RELATIVE),
     path.resolve(process.cwd(), '..', DEFAULT_C4_RECEIVE_RELATIVE),
     path.resolve(process.cwd(), '..', '..', DEFAULT_C4_RECEIVE_RELATIVE),
