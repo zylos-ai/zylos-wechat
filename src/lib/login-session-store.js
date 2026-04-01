@@ -221,14 +221,19 @@ export class LoginSessionStore {
 
   async getActiveSession() {
     await this.cleanup();
-    if (!this.#activeSessionId) {
-      return null;
-    }
-    const session = await this.getSession(this.#activeSessionId);
-    if (!session || session.terminalAt) {
+    if (this.#activeSessionId) {
+      const session = await this.getSession(this.#activeSessionId);
+      if (session && !session.terminalAt) {
+        return session;
+      }
       this.#activeSessionId = null;
+    }
+
+    const session = await this.#findLatestNonTerminalSession();
+    if (!session) {
       return null;
     }
+    this.#activeSessionId = session.sessionId;
     return session;
   }
 
@@ -496,7 +501,10 @@ export class LoginSessionStore {
       });
     } finally {
       this.#sessions.delete(runtime.publicState.sessionId);
-      if (this.#activeSessionId === runtime.publicState.sessionId) {
+      if (
+        this.#activeSessionId === runtime.publicState.sessionId &&
+        runtime.publicState.terminalAt
+      ) {
         this.#activeSessionId = null;
       }
     }
@@ -530,5 +538,34 @@ export class LoginSessionStore {
     } catch {
       return null;
     }
+  }
+
+  async #findLatestNonTerminalSession() {
+    const { readdir } = await import('node:fs/promises');
+
+    let names = [];
+    try {
+      names = await readdir(this.#sessionsDir);
+    } catch {
+      return null;
+    }
+
+    let best = null;
+    let bestCreatedAt = Number.NEGATIVE_INFINITY;
+
+    for (const name of names) {
+      if (!name.endsWith('.json') || name.endsWith('.secret.json')) continue;
+      const session = await this.#loadPublicFile(join(this.#sessionsDir, name));
+      if (!session || session.terminalAt || typeof session.sessionId !== 'string') continue;
+
+      const createdAt = Date.parse(session.createdAt || '');
+      const sortKey = Number.isFinite(createdAt) ? createdAt : 0;
+      if (!best || sortKey >= bestCreatedAt) {
+        best = publicSessionShape(session);
+        bestCreatedAt = sortKey;
+      }
+    }
+
+    return best;
   }
 }
