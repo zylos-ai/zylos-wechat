@@ -6,7 +6,7 @@ module.exports = {
     {
       name: 'zylos-wechat',
       script: 'src/index.js',
-      cwd: path.join(os.homedir(), '.claude/skills/wechat'),
+      cwd: path.join(os.homedir(), 'zylos/.claude/skills/wechat'),
       env: {
         NODE_ENV: 'production',
         ZYLOS_WECHAT_DATA_DIR: path.join(os.homedir(), 'zylos/components/wechat'),
