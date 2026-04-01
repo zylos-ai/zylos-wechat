@@ -6,6 +6,10 @@ import { sendToC4 } from './lib/bridge.js';
 import { AccountManager } from './lib/account-manager.js';
 import { ContextTokenStore } from './lib/context-tokens.js';
 import { TypingManager } from './lib/typing.js';
+import { WeChatApiClient } from './lib/api-client.js';
+import { RuntimeHealthStore } from './lib/runtime-health-store.js';
+import { LoginSessionStore } from './lib/login-session-store.js';
+import { AdminServer } from './lib/admin-server.js';
 
 let runtimeConfig = getConfig();
 let logger = createLogger(runtimeConfig.logLevel);
@@ -22,13 +26,26 @@ const manager = new AccountManager(dataDir);
 const contextTokens = new ContextTokenStore({
   persistPath: join(dataDir, 'context-tokens.json'),
 });
+const runtimeHealth = new RuntimeHealthStore(dataDir);
+const loginSessions = new LoginSessionStore({
+  dataDir,
+  logger,
+  qrClientFactory: () =>
+    new WeChatApiClient({
+      baseUrl: runtimeConfig.wechat.apiBase,
+      cdnBaseUrl: runtimeConfig.wechat.cdnBaseUrl,
+    }),
+});
 const typingManagers = new Map(); // raw accountId -> TypingManager
 
 const seenMessages = new Set();
 const DEDUPE_MAX = 10_000;
 const ACCOUNT_RECONCILE_INTERVAL_MS = 10_000;
+const REPLYABILITY_REFRESH_INTERVAL_MS = 60_000;
 let shuttingDown = false;
 let reconcileTimer = null;
+let replyabilityTimer = null;
+let adminServer = null;
 
 function markSeen(key) {
   seenMessages.add(key);
@@ -56,6 +73,31 @@ function extractText(msg) {
   return '';
 }
 
+function latestContextState(normalizedId, rawAccountId) {
+  const latest = contextTokens.latestTimestampForAccount(normalizedId, [rawAccountId]);
+  if (!latest) {
+    return {
+      replyability: 'needs_user_message',
+      lastContextAt: null,
+    };
+  }
+  return {
+    replyability: 'replyable',
+    lastContextAt: new Date(latest).toISOString(),
+  };
+}
+
+async function syncAccountReplyability(normalizedId, rawAccountId) {
+  const runtime = await runtimeHealth.load(normalizedId);
+  if (!runtime) return;
+  const contextState = latestContextState(normalizedId, rawAccountId);
+  await runtimeHealth.upsert(normalizedId, {
+    accountId: rawAccountId,
+    replyability: contextState.replyability,
+    lastContextAt: contextState.lastContextAt,
+  });
+}
+
 async function handleMessages(msgs, accountId, normalizedId) {
   for (const msg of msgs) {
     if (msg.message_type === 2) continue;
@@ -68,10 +110,21 @@ async function handleMessages(msgs, accountId, normalizedId) {
     if (seenMessages.has(dedupeKey)) continue;
 
     const fromUserId = msg.from_user_id || '';
+    const receivedAt = new Date().toISOString();
 
     if (msg.context_token && fromUserId) {
       contextTokens.set(normalizedId, fromUserId, msg.context_token);
     }
+
+    await runtimeHealth.upsert(normalizedId, {
+      accountId,
+      loginHealth: 'healthy',
+      lastPollAt: receivedAt,
+      lastPollErrorCode: null,
+      lastPollErrorMessage: null,
+      lastInboundAt: receivedAt,
+      ...latestContextState(normalizedId, accountId),
+    });
 
     if (!isDmAllowed(fromUserId)) {
       logger.debug('drop from non-allowlisted user:', fromUserId);
@@ -123,13 +176,34 @@ async function main() {
   });
 
   await manager.init();
+  await loginSessions.init();
 
-  manager.on('error', (err, acctId) => {
+  manager.on('error', (err, acctId, normalizedId) => {
     logger.error(`[${acctId}] error:`, err.message);
+    if (normalizedId) {
+      void runtimeHealth.upsert(normalizedId, {
+        accountId: acctId,
+        loginHealth: 'degraded',
+        lastPollAt: new Date().toISOString(),
+        lastPollErrorCode: 'WECHAT_POLL_ERROR',
+        lastPollErrorMessage: err.message,
+        ...latestContextState(normalizedId, acctId),
+      });
+    }
   });
 
-  manager.on('session-expired', (acctId) => {
+  manager.on('session-expired', (acctId, normalizedId) => {
     logger.warn(`[${acctId}] session expired - paused for 60 minutes`);
+    if (normalizedId) {
+      void runtimeHealth.upsert(normalizedId, {
+        accountId: acctId,
+        loginHealth: 'reauth_required',
+        lastPollAt: new Date().toISOString(),
+        lastPollErrorCode: 'WECHAT_SESSION_EXPIRED',
+        lastPollErrorMessage: 'Session expired and requires QR re-auth',
+        replyability: 'unknown',
+      });
+    }
   });
 
   manager.on('connected', (acctId, normalizedId) => {
@@ -138,14 +212,34 @@ async function main() {
     if (client) {
       typingManagers.set(acctId, new TypingManager(client));
     }
+    void manager.store.loadCredentials(normalizedId).then((creds) => {
+      void runtimeHealth.upsert(normalizedId, {
+        accountId: acctId,
+        userId: creds?.userId || null,
+        savedAt: creds?.savedAt || null,
+        loginHealth: 'healthy',
+        lastPollAt: new Date().toISOString(),
+        lastPollErrorCode: null,
+        lastPollErrorMessage: null,
+        ...latestContextState(normalizedId, acctId),
+      });
+    });
   });
 
-  manager.on('disconnected', (acctId) => {
+  manager.on('disconnected', (acctId, normalizedId) => {
     logger.info(`[${acctId}] polling stopped`);
     const typingMgr = typingManagers.get(acctId);
     if (typingMgr) {
       typingMgr.stopAll();
       typingManagers.delete(acctId);
+    }
+    if (normalizedId) {
+      void runtimeHealth.upsert(normalizedId, {
+        accountId: acctId,
+        loginHealth: 'degraded',
+        lastPollAt: new Date().toISOString(),
+        ...latestContextState(normalizedId, acctId),
+      });
     }
   });
 
@@ -159,6 +253,32 @@ async function main() {
     });
   }, ACCOUNT_RECONCILE_INTERVAL_MS);
   reconcileTimer.unref?.();
+
+  replyabilityTimer = setInterval(() => {
+    if (shuttingDown) return;
+    contextTokens.cleanup();
+    for (const account of manager.listAccounts()) {
+      void syncAccountReplyability(account.normalizedId, account.accountId);
+    }
+  }, REPLYABILITY_REFRESH_INTERVAL_MS);
+  replyabilityTimer.unref?.();
+
+  if (runtimeConfig.admin?.enabled !== false) {
+    adminServer = new AdminServer({
+      host: runtimeConfig.admin.host,
+      port: runtimeConfig.admin.port,
+      tokenPath: paths.adminTokenFile,
+      logger,
+      getConfig: () => runtimeConfig,
+      accountManager: manager,
+      accountStore: manager.store,
+      contextTokens,
+      loginSessions,
+      runtimeHealth,
+      reconcileAccounts: () => manager.reconcileCurrent(),
+    });
+    await adminServer.start();
+  }
 
   const accounts = manager.listAccounts();
   if (accounts.length === 0) {
@@ -178,7 +298,13 @@ function shutdown(sig) {
     clearInterval(reconcileTimer);
     reconcileTimer = null;
   }
+  if (replyabilityTimer) {
+    clearInterval(replyabilityTimer);
+    replyabilityTimer = null;
+  }
   contextTokens.flush();
+  loginSessions.stop();
+  void adminServer?.close().catch(() => {});
 
   for (const typingMgr of typingManagers.values()) {
     typingMgr.stopAll();
