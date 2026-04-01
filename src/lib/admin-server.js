@@ -190,7 +190,10 @@ export class AdminServer {
               savedAt: existing[0].savedAt || staged.savedAt,
             };
           }
-          throw new Error('WECHAT_ACCOUNT_CONFLICT');
+          throw this.#businessError(
+            'WECHAT_ACCOUNT_CONFLICT',
+            'WeChat account already exists on this VM'
+          );
         }
 
         await this.#accountStore.saveCredentials(staged);
@@ -348,6 +351,12 @@ export class AdminServer {
     await writeTextAtomic(this.#tokenPath, `${token}\n`, { mode: 0o600 });
     this.#token = token;
     this.#tokenStatus = { healthy: true, issue: null };
+  }
+
+  #businessError(code, message) {
+    const error = new Error(message || code);
+    error.code = code;
+    return error;
   }
 
   #isAuthorized(req) {

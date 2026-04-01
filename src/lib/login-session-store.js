@@ -19,7 +19,20 @@ function isObject(value) {
 }
 
 function summarizeError(err) {
+  const structuredCode =
+    err &&
+    typeof err === 'object' &&
+    typeof err.code === 'string' &&
+    err.code.startsWith('WECHAT_')
+      ? err.code
+      : null;
   const message = err instanceof Error ? err.message : String(err || 'unknown_error');
+  if (structuredCode) {
+    return {
+      code: structuredCode,
+      message: message || structuredCode,
+    };
+  }
   if (message.includes('timed out')) {
     return { code: 'WECHAT_LOGIN_TIMEOUT', message };
   }
