@@ -10,7 +10,7 @@
     "send": "node scripts/send.js",
     "admin": "node src/admin.js",
     "check": "node --check src/index.js",
-    "test": "node test/crypto-roundtrip.js && node test/c4-path-detection.js && node test/login-session-store.js && npm run check"
+    "test": "node test/crypto-roundtrip.js && node test/c4-path-detection.js && node test/login-session-store.js && node test/inbound-media.js && npm run check"
   },
   "repository": {
     "type": "git",
