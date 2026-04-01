@@ -1,6 +1,6 @@
 ---
 name: wechat
-version: 0.2.0
+version: 0.2.1
 description: >-
   WeChat (微信) communication channel for Zylos. Use when: (1) replying to WeChat
   messages (DM), (2) sending proactive messages or media (images, files) to WeChat

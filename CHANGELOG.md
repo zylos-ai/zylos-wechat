@@ -2,6 +2,15 @@
 
 All notable changes to zylos-wechat will be documented in this file.
 
+## [0.2.1] - 2026-04-01
+
+### Fixed
+- Inbound WeChat media messages now download and forward image, file, video, and voice attachments into the existing C4 text bridge format
+- Inbound media download now supports `full_url` fallback when encrypted query parameters are insufficient on their own
+- Quoted-message media is now detected and forwarded instead of being dropped during inbound dispatch
+- Voice messages now prefer `voice_item.text` as the message body and only fall back to `[voice: ...]` attachment forwarding when no transcript is available
+- Confirmed login session test fixtures now use relative timestamps so the test suite does not fail after the hard-coded expiry window passes
+
 ## [0.2.0] - 2026-04-01
 
 ### Added
