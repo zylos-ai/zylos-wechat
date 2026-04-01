@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import QRCode from 'qrcode';
 import { WeChatApiClient } from './api-client.js';
 import { removeFileIfExists, writeJsonAtomic } from './file-store.js';
 
@@ -58,31 +59,60 @@ function publicSessionShape(session) {
   };
 }
 
-async function maybeFetchQrPngBase64(qrcodeImgContent) {
-  if (typeof qrcodeImgContent !== 'string' || !qrcodeImgContent.trim()) {
+function hasPngSignature(buffer) {
+  return (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  );
+}
+
+function extractPngBase64(value) {
+  try {
+    const buffer = Buffer.from(value, 'base64');
+    return hasPngSignature(buffer) ? buffer.toString('base64') : null;
+  } catch {
+    return null;
+  }
+}
+
+async function normalizeQrPngBase64(qrcodeImgContent) {
+  if (typeof qrcodeImgContent !== 'string') {
     return null;
   }
 
-  if (qrcodeImgContent.startsWith('data:image/png;base64,')) {
-    return qrcodeImgContent.slice('data:image/png;base64,'.length);
+  const trimmed = qrcodeImgContent.trim();
+  if (!trimmed) {
+    return null;
   }
 
-  const maybeBase64 = qrcodeImgContent.replace(/\s+/g, '');
+  if (trimmed.startsWith('data:image/png;base64,')) {
+    return trimmed.slice('data:image/png;base64,'.length);
+  }
+
+  const maybeBase64 = trimmed.replace(/\s+/g, '');
   if (/^[A-Za-z0-9+/=]+$/.test(maybeBase64) && maybeBase64.length > 256) {
-    return maybeBase64;
+    const pngBase64 = extractPngBase64(maybeBase64);
+    if (pngBase64) {
+      return pngBase64;
+    }
   }
 
-  if (!/^https?:\/\//i.test(qrcodeImgContent)) {
-    return null;
-  }
-
-  const response = await fetch(qrcodeImgContent, {
-    signal: AbortSignal.timeout(15_000),
+  // Upstream commonly returns a URL that should be encoded into a QR,
+  // not a directly downloadable image payload. Generate a PNG locally so
+  // dashboard callers can keep rendering a stable qrPngBase64 contract.
+  const buffer = await QRCode.toBuffer(trimmed, {
+    errorCorrectionLevel: 'M',
+    margin: 1,
+    type: 'png',
+    width: 256,
   });
-  if (!response.ok) {
-    throw new Error(`Failed to download QR image: HTTP ${response.status}`);
-  }
-  const buffer = Buffer.from(await response.arrayBuffer());
   return buffer.toString('base64');
 }
 
@@ -250,7 +280,7 @@ export class LoginSessionStore {
 
       runtime.qrcode = firstQr.qrcode;
       runtime.client = client;
-      runtime.publicState.qrPngBase64 = await maybeFetchQrPngBase64(firstQr.qrcode_img_content);
+      runtime.publicState.qrPngBase64 = await normalizeQrPngBase64(firstQr.qrcode_img_content);
       runtime.publicState.state = 'qr_ready';
       runtime.publicState.expiresAt = new Date(Date.now() + ACTIVE_SESSION_TTL_MS).toISOString();
       await this.#writePublic(runtime.publicState);
@@ -448,7 +478,7 @@ export class LoginSessionStore {
           const nextQr = await runtime.client.getQrCode();
           runtime.qrcode = nextQr.qrcode;
           session.state = 'qr_ready';
-          session.qrPngBase64 = await maybeFetchQrPngBase64(nextQr.qrcode_img_content);
+          session.qrPngBase64 = await normalizeQrPngBase64(nextQr.qrcode_img_content);
           session.expiresAt = new Date(Date.now() + ACTIVE_SESSION_TTL_MS).toISOString();
           session.lastErrorCode = null;
           session.lastErrorMessage = null;
