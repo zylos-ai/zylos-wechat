@@ -9,7 +9,8 @@
     "dev": "node --watch src/index.js",
     "send": "node scripts/send.js",
     "admin": "node src/admin.js",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js",
+    "test": "node test/crypto-roundtrip.js && node test/c4-path-detection.js && npm run check"
   },
   "repository": {
     "type": "git",

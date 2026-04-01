@@ -88,7 +88,7 @@ Primary config: `~/zylos/components/wechat/config.json`
     "cdnBaseUrl": "https://novac2c.cdn.weixin.qq.com/c2c"
   },
   "c4": {
-    "receiveScript": "~/.claude/skills/comm-bridge/scripts/c4-receive.js"
+    "receiveScript": "~/zylos/.claude/skills/comm-bridge/scripts/c4-receive.js"
   }
 }
 ```
