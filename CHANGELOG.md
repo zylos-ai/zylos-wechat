@@ -2,6 +2,21 @@
 
 All notable changes to zylos-wechat will be documented in this file.
 
+## [0.2.0] - 2026-04-01
+
+### Added
+- Localhost-only admin HTTP control plane for login start/status/cancel/finalize and account health/disconnect
+- Login session persistence with staged credentials and 30-minute terminal tombstones
+- Runtime health snapshots tracking login health, replyability, and recent inbound/context timestamps
+- Replyability refresh based on the latest valid `context_token`
+
+### Changed
+- Main runtime now exposes machine-driven account lifecycle control for `coco-dashboard` integration
+- Admin token files now self-heal if missing or invalid
+
+### Fixed
+- Finalize now preserves `WECHAT_ACCOUNT_CONFLICT` so callers receive the correct 409 conflict semantics
+
 ## [0.1.0] - 2026-03-22
 
 ### Added
