@@ -302,10 +302,11 @@ export class WeChatApiClient {
   /**
    * Download encrypted file from CDN.
    * @param {string} encryptQueryParam
+   * @param {string} [fullUrl]
    * @returns {Promise<Buffer>}
    */
-  async cdnDownload(encryptQueryParam) {
-    const url = `${this.#cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
+  async cdnDownload(encryptQueryParam, fullUrl) {
+    const url = fullUrl || `${this.#cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(encryptQueryParam)}`;
     const abort = createAbortContext(TIMEOUT_REGULAR);
 
     try {

@@ -10,6 +10,12 @@ import { WeChatApiClient } from './lib/api-client.js';
 import { RuntimeHealthStore } from './lib/runtime-health-store.js';
 import { LoginSessionStore } from './lib/login-session-store.js';
 import { AdminServer } from './lib/admin-server.js';
+import {
+  downloadInboundMedia,
+  extractTextBody,
+  formatInboundContent,
+  pickInboundMediaItem,
+} from './lib/inbound-media.js';
 
 let runtimeConfig = getConfig();
 let logger = createLogger(runtimeConfig.logLevel);
@@ -64,13 +70,7 @@ function isDmAllowed(userId) {
 }
 
 function extractText(msg) {
-  if (!msg.item_list || msg.item_list.length === 0) return '';
-  for (const item of msg.item_list) {
-    if (item.type === 1 && item.text_item?.text) {
-      return item.text_item.text;
-    }
-  }
-  return '';
+  return extractTextBody(msg.item_list);
 }
 
 function latestContextState(normalizedId, rawAccountId) {
@@ -132,9 +132,21 @@ async function handleMessages(msgs, accountId, normalizedId) {
       continue;
     }
 
+    const client = manager.getClient(normalizedId);
+    const mediaItem = pickInboundMediaItem(msg.item_list);
+    const mediaResult = mediaItem && client
+      ? await downloadInboundMedia(client, mediaItem, {
+          mediaDir: paths.mediaDir,
+          logger,
+          label: 'inbound',
+        })
+      : {};
+
     const text = extractText(msg);
     const endpoint = fromUserId ? `${normalizedId}|to:${fromUserId}` : normalizedId;
-    const content = `[WeChat DM] ${fromUserId} said: ${text}`;
+    const content = mediaItem || text
+      ? formatInboundContent(msg, mediaResult)
+      : `[WeChat DM] ${fromUserId} said: ${text}`;
 
     const typingMgr = typingManagers.get(accountId);
     if (typingMgr && fromUserId) {

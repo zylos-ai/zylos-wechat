@@ -7,14 +7,15 @@ import { LoginSessionStore } from '../src/lib/login-session-store.js';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-wechat-login-session-'));
 const dataDir = path.join(tmpRoot, 'data');
 const sessionsDir = path.join(dataDir, 'login-sessions');
+const now = Date.now();
 
 fs.mkdirSync(sessionsDir, { recursive: true });
 
 const confirmedSession = {
   sessionId: 'wxlogin_confirmed_fixture',
   state: 'confirmed',
-  createdAt: '2026-04-01T10:00:00.000Z',
-  expiresAt: '2026-04-01T10:10:00.000Z',
+  createdAt: new Date(now - 60_000).toISOString(),
+  expiresAt: new Date(now + 10 * 60_000).toISOString(),
   terminalAt: null,
   qrPngBase64: null,
   accountId: 'abc123@im.bot',
