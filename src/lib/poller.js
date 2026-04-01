@@ -14,6 +14,39 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_AFTER_MAX_FAILURES = 30_000; // 30s
 const RETRY_DELAY = 2_000; // 2s
 
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/**
+ * WeChat getUpdates currently returns success payloads without ret/errcode.
+ * Treat as error only when ret/errcode are explicitly present and non-zero.
+ */
+function parseApiError(response) {
+  if (!response || typeof response !== 'object') {
+    return { ret: undefined, errcode: undefined, errmsg: 'invalid response payload' };
+  }
+
+  const hasRet = hasOwn(response, 'ret');
+  const hasErrcode = hasOwn(response, 'errcode');
+  const ret = response.ret;
+  const errcode = response.errcode;
+
+  if (!hasRet && !hasErrcode) {
+    return null;
+  }
+
+  if ((hasRet && ret !== 0) || (hasErrcode && errcode !== 0)) {
+    return {
+      ret,
+      errcode,
+      errmsg: response.errmsg,
+    };
+  }
+
+  return null;
+}
+
 /**
  * @typedef {object} PollerEvents
  * @property {(msgs: object[], accountId: string) => void} messages - New messages received
@@ -100,18 +133,18 @@ export class Poller extends EventEmitter {
         // Success — reset failure counter
         this.#consecutiveFailures = 0;
 
-        // Check for API-level errors
-        if (response.ret !== 0 || response.errcode !== 0) {
-          if (response.errcode === SESSION_EXPIRED_ERRCODE) {
+        // API-level errors: only when ret/errcode are explicitly non-zero.
+        const apiError = parseApiError(response);
+        if (apiError) {
+          if (apiError.errcode === SESSION_EXPIRED_ERRCODE) {
             this.#sessionPausedUntil = Date.now() + SESSION_PAUSE_MS;
             this.emit('session-expired', this.#accountId);
             continue;
           }
 
-          // Non-session error
           this.#consecutiveFailures++;
           this.emit('error', new Error(
-            `getUpdates error: ret=${response.ret} errcode=${response.errcode} errmsg=${response.errmsg}`
+            `getUpdates error: ret=${apiError.ret} errcode=${apiError.errcode} errmsg=${apiError.errmsg}`
           ), this.#accountId);
 
           await this.#handleFailure();

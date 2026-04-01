@@ -7,8 +7,10 @@
  * - sync state file: get_updates_buf (long-poll cursor)
  */
 
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+const CONTEXT_TOKENS_FILE = 'context-tokens.json';
 
 export class AccountStore {
   #dataDir;
@@ -32,6 +34,26 @@ export class AccountStore {
     return join(this.#dataDir, 'accounts.json');
   }
 
+  async #writeJsonAtomic(path, value, opts = {}) {
+    const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+    const json = `${JSON.stringify(value, null, 2)}\n`;
+
+    try {
+      await writeFile(tmpPath, json);
+      if (typeof opts.mode === 'number') {
+        await chmod(tmpPath, opts.mode);
+      }
+      await rename(tmpPath, path);
+    } catch (error) {
+      try {
+        await unlink(tmpPath);
+      } catch {
+        // ignore tmp cleanup failures
+      }
+      throw error;
+    }
+  }
+
   /**
    * List all registered account IDs (normalized).
    * @returns {Promise<string[]>}
@@ -39,7 +61,8 @@ export class AccountStore {
   async listAccounts() {
     try {
       const data = await readFile(this.#indexPath(), 'utf8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
@@ -53,7 +76,7 @@ export class AccountStore {
     const accounts = await this.listAccounts();
     if (!accounts.includes(normalizedId)) {
       accounts.push(normalizedId);
-      await writeFile(this.#indexPath(), JSON.stringify(accounts, null, 2));
+      await this.#writeJsonAtomic(this.#indexPath(), accounts);
     }
   }
 
@@ -63,8 +86,8 @@ export class AccountStore {
    */
   async #removeFromIndex(normalizedId) {
     const accounts = await this.listAccounts();
-    const filtered = accounts.filter(id => id !== normalizedId);
-    await writeFile(this.#indexPath(), JSON.stringify(filtered, null, 2));
+    const filtered = accounts.filter((id) => id !== normalizedId);
+    await this.#writeJsonAtomic(this.#indexPath(), filtered);
   }
 
   // --- Account Credentials ---
@@ -81,21 +104,20 @@ export class AccountStore {
   async saveCredentials(creds) {
     const path = this.#credPath(creds.normalizedId);
     const data = {
-      accountId: creds.accountId, // raw ID (e.g. "hex@im.bot") — preserved for runtime use
+      accountId: creds.accountId,
       token: creds.token,
       baseUrl: creds.baseUrl,
       userId: creds.userId,
       savedAt: creds.savedAt,
     };
-    await writeFile(path, JSON.stringify(data, null, 2));
-    await chmod(path, 0o600);
+    await this.#writeJsonAtomic(path, data, { mode: 0o600 });
     await this.#addToIndex(creds.normalizedId);
   }
 
   /**
    * Load account credentials.
    * @param {string} normalizedId
-   * @returns {Promise<{token: string, baseUrl: string, userId: string, savedAt: string} | null>}
+   * @returns {Promise<{accountId?: string, token: string, baseUrl: string, userId: string, savedAt: string} | null>}
    */
   async loadCredentials(normalizedId) {
     try {
@@ -106,20 +128,63 @@ export class AccountStore {
     }
   }
 
+  async #removeContextTokens(normalizedId, rawAccountId) {
+    const path = join(this.#dataDir, CONTEXT_TOKENS_FILE);
+    let data;
+
+    try {
+      data = JSON.parse(await readFile(path, 'utf8'));
+    } catch {
+      return;
+    }
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return;
+    }
+
+    const prefixes = new Set([`${normalizedId}:`]);
+    if (rawAccountId && rawAccountId !== normalizedId) {
+      prefixes.add(`${rawAccountId}:`);
+    }
+
+    const filtered = {};
+    let changed = false;
+
+    for (const [key, value] of Object.entries(data)) {
+      const remove = [...prefixes].some((prefix) => key.startsWith(prefix));
+      if (remove) {
+        changed = true;
+        continue;
+      }
+      filtered[key] = value;
+    }
+
+    if (changed) {
+      await this.#writeJsonAtomic(path, filtered, { mode: 0o600 });
+    }
+  }
+
   /**
    * Remove account and its state files.
    * @param {string} normalizedId
    */
   async removeAccount(normalizedId) {
-    const { unlink } = await import('node:fs/promises');
+    const creds = await this.loadCredentials(normalizedId);
     const paths = [
       this.#credPath(normalizedId),
       this.#syncPath(normalizedId),
     ];
-    for (const p of paths) {
-      try { await unlink(p); } catch { /* ignore */ }
+
+    for (const path of paths) {
+      try {
+        await unlink(path);
+      } catch {
+        // ignore missing files
+      }
     }
+
     await this.#removeFromIndex(normalizedId);
+    await this.#removeContextTokens(normalizedId, creds?.accountId || null);
   }
 
   // --- Sync State ---
@@ -149,13 +214,14 @@ export class AccountStore {
    * @param {string} getUpdatesBuf
    */
   async saveSyncState(normalizedId, getUpdatesBuf) {
-    const path = this.#syncPath(normalizedId);
-    await writeFile(path, JSON.stringify({ get_updates_buf: getUpdatesBuf }));
+    await this.#writeJsonAtomic(this.#syncPath(normalizedId), {
+      get_updates_buf: getUpdatesBuf,
+    });
   }
 
   /**
    * Load all accounts with their credentials.
-   * @returns {Promise<Array<{normalizedId: string, token: string, baseUrl: string, userId: string, savedAt: string}>>}
+   * @returns {Promise<Array<{normalizedId: string, accountId?: string, token: string, baseUrl: string, userId: string, savedAt: string}>>}
    */
   async loadAllAccounts() {
     const ids = await this.listAccounts();

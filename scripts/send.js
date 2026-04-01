@@ -3,6 +3,7 @@
  * Outbound send script for zylos-wechat.
  *
  * Called by C4 comm-bridge via c4-send.js:
+ *   node scripts/send.js <endpoint_id> "<message>"
  *   echo "message" | node scripts/send.js <endpoint_id>
  *
  * Or directly:
@@ -23,11 +24,9 @@ import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
 import { uploadMedia, MEDIA_TYPE } from '../src/lib/media-upload.js';
 
-// --- Resolve data dir ---
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
   || join(process.env.HOME || '', 'zylos/components/wechat');
 
-// --- Parse arguments ---
 function arg(name) {
   const i = process.argv.indexOf(name);
   if (i < 0) return '';
@@ -43,31 +42,31 @@ async function readStdin() {
 }
 
 async function main() {
-  let to, text, contextToken, accountId;
+  let to;
+  let text;
+  let contextToken;
+  let accountId;
 
-  // Mode 1: C4 comm-bridge style — endpoint_id as argv[2], message on stdin
   const endpointArg = process.argv[2];
   const hasFlags = process.argv.includes('--to') || process.argv.includes('--text');
 
   if (endpointArg && !hasFlags && !endpointArg.startsWith('-')) {
-    // Parse endpoint: "normalizedAccountId|to:wechatUserId" or just "wechatUserId"
     const parts = endpointArg.split('|');
     if (parts.length >= 2) {
       accountId = parts[0];
-      const toPart = parts.find(p => p.startsWith('to:'));
+      const toPart = parts.find((p) => p.startsWith('to:'));
       to = toPart ? toPart.slice(3) : parts[1];
     } else {
       to = endpointArg;
     }
 
-    // Read message from stdin
-    text = await readStdin();
+    const messageArg = process.argv.slice(3).join(' ').trim();
+    text = messageArg || await readStdin();
     if (!text) {
-      console.error('No message on stdin');
+      console.error('No message provided (expected argv[3] or stdin)');
       process.exit(1);
     }
   } else {
-    // Mode 2: Direct CLI flags
     to = arg('--to');
     text = arg('--text');
     contextToken = arg('--context-token');
@@ -76,26 +75,30 @@ async function main() {
 
   if (!to || !text) {
     console.error('Usage:');
+    console.error('  node scripts/send.js <endpoint_id> "<message>"');
     console.error('  echo "message" | node scripts/send.js <endpoint_id>');
-    console.error('  node scripts/send.js --to <wechat_id> --text <message> --context-token <token>');
+    console.error('  node scripts/send.js --to <wechat_id> --text <message> --context-token <token> [--account <normalized_id>]');
     process.exit(1);
   }
 
-  // --- Load account credentials ---
   const store = new AccountStore(DATA_DIR);
   await store.init();
+  const accounts = await store.loadAllAccounts();
 
-  // Find account to send from
   let creds;
   if (accountId) {
     creds = await store.loadCredentials(accountId);
-  } else {
-    // Default: use first account
-    const accounts = await store.loadAllAccounts();
-    if (accounts.length > 0) {
-      creds = accounts[0];
-      accountId = accounts[0].normalizedId;
+    if (!creds) {
+      console.error(`ERR_WECHAT_AUTH: Account not found: ${accountId}`);
+      process.exit(1);
     }
+  } else if (accounts.length === 1) {
+    creds = accounts[0];
+    accountId = creds.normalizedId;
+  } else if (accounts.length > 1) {
+    console.error('ERR_WECHAT_ACCOUNT_REQUIRED: Multiple accounts configured');
+    console.error('Use an endpoint like "<account>|to:<wechat_user_id>" or pass --account <normalized_id>.');
+    process.exit(1);
   }
 
   if (!creds || !creds.token) {
@@ -103,14 +106,10 @@ async function main() {
     process.exit(1);
   }
 
-  // --- Resolve context token ---
   if (!contextToken) {
-    // Load from persisted context token cache (written by the running service)
     const tokenCachePath = join(DATA_DIR, 'context-tokens.json');
     const tokenStore = ContextTokenStore.fromDisk(tokenCachePath);
-    // index.js writes tokens keyed by normalizedId (= accountId arg from endpoint)
     contextToken = tokenStore.get(accountId, to);
-    // Fallback: try raw accountId in case of older cache entries
     if (!contextToken && creds.accountId && creds.accountId !== accountId) {
       contextToken = tokenStore.get(creds.accountId, to);
     }
@@ -123,21 +122,16 @@ async function main() {
     }
   }
 
-  // --- Build and send ---
   const client = new WeChatApiClient({
     token: creds.token,
     baseUrl: creds.baseUrl,
   });
 
-  // Check for media prefix: [MEDIA:type]/path/to/file
   const mediaMatch = text.match(/^\[MEDIA:(\w+)\](.+)$/);
 
   if (mediaMatch) {
-    // --- Media send ---
     const mediaTypeStr = mediaMatch[1].toLowerCase();
     const mediaPath = mediaMatch[2].trim();
-
-    // Map explicit type to MEDIA_TYPE constant
     const typeMap = {
       image: MEDIA_TYPE.IMAGE,
       video: MEDIA_TYPE.VIDEO,
@@ -172,10 +166,7 @@ async function main() {
       process.exit(1);
     }
   } else {
-    // --- Text send ---
     const clientId = `zylos-wechat:${Date.now()}-${randomBytes(4).toString('hex')}`;
-
-    // Split long messages (4000 char limit)
     const MAX_CHARS = 4000;
     const chunks = [];
     for (let i = 0; i < text.length; i += MAX_CHARS) {
@@ -200,22 +191,19 @@ async function main() {
     }
   }
 
-  // Cancel typing indicator after successful send
-  // Directly call getConfig → sendTyping(status=2) since send.js is a separate process
-  // with no cached state from the main service
   try {
     const configResp = await client.getConfig(to, contextToken);
     if (configResp.typing_ticket) {
       await client.sendTyping(to, configResp.typing_ticket, 2);
     }
   } catch {
-    // Non-critical — typing cancel is best-effort
+    // Non-critical
   }
 
   console.log('OK');
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(err.message);
   process.exit(1);
 });
