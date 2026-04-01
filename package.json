@@ -1,6 +1,6 @@
 {
   "name": "zylos-wechat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "WeChat component for Zylos (C4 bridge based)",
   "type": "module",
   "main": "src/index.js",
