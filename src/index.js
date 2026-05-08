@@ -288,6 +288,7 @@ async function main() {
       loginSessions,
       runtimeHealth,
       reconcileAccounts: () => manager.reconcileCurrent(),
+      typingManagers,
     });
     await adminServer.start();
   }

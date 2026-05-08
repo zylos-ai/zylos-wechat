@@ -37,6 +37,7 @@ export class AdminServer {
   #loginSessions;
   #runtimeHealth;
   #reconcileAccounts;
+  #typingManagers;
   #server = null;
   #token = null;
   #tokenStatus = { healthy: true, issue: null };
@@ -54,6 +55,7 @@ export class AdminServer {
     this.#loginSessions = opts.loginSessions;
     this.#runtimeHealth = opts.runtimeHealth;
     this.#reconcileAccounts = opts.reconcileAccounts;
+    this.#typingManagers = opts.typingManagers || new Map();
   }
 
   async start() {
@@ -308,6 +310,23 @@ export class AdminServer {
       await this.#runtimeHealth.remove(normalizedId).catch(() => {});
       await this.#reconcileAccounts();
       return json(res, 200, { ok: true, removed: { normalizedAccountId: normalizedId } });
+    }
+
+    if (url.pathname === '/v1/typing/stop' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const userId = typeof body.userId === 'string' ? body.userId : '';
+      if (!userId) {
+        return json(res, 400, {
+          ok: false,
+          error: { code: 'WECHAT_INVALID_PARAMS', message: 'userId is required' },
+        });
+      }
+      let stopped = false;
+      for (const typingMgr of this.#typingManagers.values()) {
+        await typingMgr.stopTyping(userId);
+        stopped = true;
+      }
+      return json(res, 200, { ok: true, stopped });
     }
 
     return json(res, 404, {
