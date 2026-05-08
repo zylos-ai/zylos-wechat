@@ -28,7 +28,12 @@ if (!runtimeConfig.enabled) {
 ensureDirs();
 
 const dataDir = paths.dataDir;
-const manager = new AccountManager(dataDir);
+const manager = new AccountManager(dataDir, {
+  channelVersion: runtimeConfig.wechat.channelVersion,
+  appId: runtimeConfig.wechat.appId,
+  botAgent: runtimeConfig.wechat.botAgent,
+  logger,
+});
 const contextTokens = new ContextTokenStore({
   persistPath: join(dataDir, 'context-tokens.json'),
 });
@@ -40,6 +45,10 @@ const loginSessions = new LoginSessionStore({
     new WeChatApiClient({
       baseUrl: runtimeConfig.wechat.apiBase,
       cdnBaseUrl: runtimeConfig.wechat.cdnBaseUrl,
+      channelVersion: runtimeConfig.wechat.channelVersion,
+      appId: runtimeConfig.wechat.appId,
+      botAgent: runtimeConfig.wechat.botAgent,
+      logger,
     }),
 });
 const typingManagers = new Map(); // raw accountId -> TypingManager
@@ -223,6 +232,9 @@ async function main() {
     const client = manager.getClient(normalizedId);
     if (client) {
       typingManagers.set(acctId, new TypingManager(client));
+      client.notifyStart().catch((err) => {
+        logger.debug(`[${acctId}] notifyStart failed:`, err.message);
+      });
     }
     void manager.store.loadCredentials(normalizedId).then((creds) => {
       void runtimeHealth.upsert(normalizedId, {
@@ -322,7 +334,16 @@ function shutdown(sig) {
     typingMgr.stopAll();
   }
 
-  manager.stopAll().then(() => {
+  const notifyPromises = manager.listAccounts().map((acct) => {
+    const client = manager.getClient(acct.normalizedId);
+    return client?.notifyStop().catch((err) => {
+      logger.debug(`[${acct.accountId}] notifyStop failed:`, err.message);
+    });
+  });
+
+  Promise.allSettled(notifyPromises).then(() => {
+    return manager.stopAll();
+  }).then(() => {
     logger.info('all pollers stopped');
     process.exit(0);
   }).catch(() => {

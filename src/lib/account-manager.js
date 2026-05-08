@@ -22,13 +22,16 @@ export class AccountManager extends EventEmitter {
   #accounts = new Map(); // normalizedId → { client, poller, state, accountId }
   #reconcilePromise = null;
   #onMessages = null;
+  #clientOpts;
 
   /**
    * @param {string} dataDir - Component data directory
+   * @param {object} [clientOpts] - Extra options forwarded to WeChatApiClient
    */
-  constructor(dataDir) {
+  constructor(dataDir, clientOpts = {}) {
     super();
     this.#store = new AccountStore(dataDir);
+    this.#clientOpts = clientOpts;
   }
 
   get store() { return this.#store; }
@@ -71,7 +74,7 @@ export class AccountManager extends EventEmitter {
    * @returns {Promise<string>} normalizedId of the new account
    */
   async addAccount(opts) {
-    const client = new WeChatApiClient();
+    const client = new WeChatApiClient({ ...this.#clientOpts });
 
     opts.onStatus?.('Starting QR login...');
 
@@ -220,6 +223,7 @@ export class AccountManager extends EventEmitter {
 
   #startAccount(acct, onMessages, existingClient = null) {
     const client = existingClient || new WeChatApiClient({
+      ...this.#clientOpts,
       token: acct.token,
       baseUrl: acct.baseUrl,
     });
