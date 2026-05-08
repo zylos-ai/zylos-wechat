@@ -18,10 +18,12 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WeChatApiClient } from '../src/lib/api-client.js';
 import { AccountStore } from '../src/lib/account-store.js';
 import { ContextTokenStore } from '../src/lib/context-tokens.js';
+import { getConfig } from '../src/lib/config.js';
 import { uploadMedia, MEDIA_TYPE } from '../src/lib/media-upload.js';
 
 const DATA_DIR = process.env.ZYLOS_WECHAT_DATA_DIR
@@ -39,6 +41,31 @@ async function readStdin() {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf8').trim();
+}
+
+async function stopTypingViaAdmin(userId) {
+  try {
+    const cfg = getConfig();
+    const host = cfg.admin?.host || '127.0.0.1';
+    const port = cfg.admin?.port || 17605;
+    const tokenPath = join(DATA_DIR, '.admin-token');
+    const token = (await readFile(tokenPath, 'utf8')).trim();
+    const res = await fetch(`http://${host}:${port}/v1/typing/stop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId }),
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error(`typing/stop: HTTP ${res.status} ${text}`);
+    }
+  } catch {
+    // Non-critical: admin server may not be running (e.g. standalone send)
+  }
 }
 
 async function main() {
@@ -191,14 +218,7 @@ async function main() {
     }
   }
 
-  try {
-    const configResp = await client.getConfig(to, contextToken);
-    if (configResp.typing_ticket) {
-      await client.sendTyping(to, configResp.typing_ticket, 2);
-    }
-  } catch {
-    // Non-critical
-  }
+  await stopTypingViaAdmin(to);
 
   console.log('OK');
 }
