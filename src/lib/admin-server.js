@@ -321,12 +321,13 @@ export class AdminServer {
           error: { code: 'WECHAT_INVALID_PARAMS', message: 'userId is required' },
         });
       }
-      let stopped = false;
+      let stoppedCount = 0;
       for (const typingMgr of this.#typingManagers.values()) {
+        const hadActive = typingMgr.isTyping?.(userId);
         await typingMgr.stopTyping(userId);
-        stopped = true;
+        if (hadActive) stoppedCount++;
       }
-      return json(res, 200, { ok: true, stopped });
+      return json(res, 200, { ok: true, stopped: stoppedCount > 0, stoppedCount });
     }
 
     return json(res, 404, {

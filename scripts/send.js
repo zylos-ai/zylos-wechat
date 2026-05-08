@@ -149,9 +149,13 @@ async function main() {
     }
   }
 
+  const cfg = getConfig();
   const client = new WeChatApiClient({
     token: creds.token,
     baseUrl: creds.baseUrl,
+    channelVersion: cfg.wechat.channelVersion,
+    appId: cfg.wechat.appId,
+    botAgent: cfg.wechat.botAgent,
   });
 
   const mediaMatch = text.match(/^\[MEDIA:(\w+)\](.+)$/);

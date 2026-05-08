@@ -337,7 +337,7 @@ function shutdown(sig) {
 
   const notifyPromises = manager.listAccounts().map((acct) => {
     const client = manager.getClient(acct.normalizedId);
-    return client?.notifyStop().catch((err) => {
+    return client?.notifyStop({ timeout: 3_000 }).catch((err) => {
       logger.debug(`[${acct.accountId}] notifyStop failed:`, err.message);
     });
   });

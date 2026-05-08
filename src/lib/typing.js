@@ -103,6 +103,10 @@ export class TypingManager {
    * Stop typing indicator for a user.
    * @param {string} userId
    */
+  isTyping(userId) {
+    return this.#activeTimers.has(userId);
+  }
+
   async stopTyping(userId) {
     const timers = this.#activeTimers.get(userId);
     if (timers) {

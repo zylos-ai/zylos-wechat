@@ -34,9 +34,9 @@ function sanitizeBotAgent(raw) {
 
 function buildClientVersion(version) {
   const parts = version.split('.').map((p) => parseInt(p, 10));
-  const major = parts[0] || 0;
-  const minor = parts[1] || 0;
-  const patch = parts[2] || 0;
+  const major = Math.min(parts[0] || 0, 255);
+  const minor = Math.min(parts[1] || 0, 255);
+  const patch = Math.min(parts[2] || 0, 255);
   return ((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff);
 }
 
@@ -288,8 +288,9 @@ export class WeChatApiClient {
     return this.post('/ilink/bot/msg/notifystart', {}, { timeout: TIMEOUT_LIGHTWEIGHT });
   }
 
-  async notifyStop() {
-    return this.post('/ilink/bot/msg/notifystop', {}, { timeout: TIMEOUT_LIGHTWEIGHT });
+  async notifyStop(opts = {}) {
+    const timeout = opts.timeout || TIMEOUT_LIGHTWEIGHT;
+    return this.post('/ilink/bot/msg/notifystop', {}, { timeout });
   }
 
   // --- QR Login ---
