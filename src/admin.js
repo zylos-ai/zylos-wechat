@@ -59,6 +59,9 @@ async function login() {
   const client = new WeChatApiClient({
     baseUrl: cfg.wechat.apiBase,
     cdnBaseUrl: cfg.wechat.cdnBaseUrl,
+    channelVersion: cfg.wechat.channelVersion,
+    appId: cfg.wechat.appId,
+    botAgent: cfg.wechat.botAgent,
   });
 
   const creds = await qrLogin(client, {

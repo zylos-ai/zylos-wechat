@@ -7,6 +7,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { redactBody, redactUrl } from './redact.js';
 
 const PACKAGE_VERSION = (() => {
   try {
@@ -16,8 +17,28 @@ const PACKAGE_VERSION = (() => {
     return '0.1.0';
   }
 })();
-const PROTOCOL_CHANNEL_VERSION = '1.0.2';
 const QR_STATUS_CLIENT_VERSION = '1';
+
+const DEFAULT_BOT_AGENT = `zylos-wechat/${PACKAGE_VERSION}`;
+const BOT_AGENT_NAME_RE = /^[A-Za-z0-9_.\-]{1,32}\/[A-Za-z0-9_.+\-]{1,32}$/;
+
+function sanitizeBotAgent(raw) {
+  if (!raw || typeof raw !== 'string') return DEFAULT_BOT_AGENT;
+  const trimmed = raw.trim();
+  if (!trimmed) return DEFAULT_BOT_AGENT;
+  const tokens = trimmed.split(/\s+/).filter((t) => BOT_AGENT_NAME_RE.test(t));
+  if (tokens.length === 0) return DEFAULT_BOT_AGENT;
+  const joined = tokens.join(' ');
+  return Buffer.byteLength(joined, 'utf-8') <= 256 ? joined : DEFAULT_BOT_AGENT;
+}
+
+function buildClientVersion(version) {
+  const parts = version.split('.').map((p) => parseInt(p, 10));
+  const major = Math.min(parts[0] || 0, 255);
+  const minor = Math.min(parts[1] || 0, 255);
+  const patch = Math.min(parts[2] || 0, 255);
+  return ((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff);
+}
 
 const DEFAULT_BASE_URL = 'https://ilinkai.weixin.qq.com';
 const DEFAULT_CDN_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
@@ -61,17 +82,31 @@ export class WeChatApiClient {
   #token;
   #baseUrl;
   #cdnBaseUrl;
+  #channelVersion;
+  #appId;
+  #botAgent;
+  #clientVersionNum;
+  #logger;
 
   /**
    * @param {object} opts
    * @param {string} [opts.token] - Bearer token from QR login
    * @param {string} [opts.baseUrl] - API base URL (per-account override)
    * @param {string} [opts.cdnBaseUrl] - CDN base URL
+   * @param {string} [opts.channelVersion] - Protocol channel version
+   * @param {string} [opts.appId] - iLink-App-Id header value
+   * @param {string} [opts.botAgent] - bot_agent field in base_info
+   * @param {object} [opts.logger]
    */
   constructor(opts = {}) {
     this.#token = opts.token || null;
     this.#baseUrl = opts.baseUrl || DEFAULT_BASE_URL;
     this.#cdnBaseUrl = opts.cdnBaseUrl || DEFAULT_CDN_URL;
+    this.#channelVersion = opts.channelVersion || '2.1.3';
+    this.#appId = opts.appId ?? 'bot';
+    this.#botAgent = sanitizeBotAgent(opts.botAgent);
+    this.#clientVersionNum = buildClientVersion(this.#channelVersion);
+    this.#logger = opts.logger || null;
   }
 
   get baseUrl() { return this.#baseUrl; }
@@ -93,7 +128,8 @@ export class WeChatApiClient {
       'Content-Type': 'application/json',
       'AuthorizationType': 'ilink_bot_token',
       'X-WECHAT-UIN': generateUin(),
-      'iLink-App-ClientVersion': opts.clientVersion || PACKAGE_VERSION,
+      'iLink-App-Id': this.#appId,
+      'iLink-App-ClientVersion': opts.clientVersion || String(this.#clientVersionNum),
     };
 
     if (this.#token && !opts.noAuth) {
@@ -122,7 +158,8 @@ export class WeChatApiClient {
     const payload = {
       ...body,
       base_info: {
-        channel_version: PROTOCOL_CHANNEL_VERSION,
+        channel_version: this.#channelVersion,
+        bot_agent: this.#botAgent,
         ...(body.base_info || {}),
       },
     };
@@ -130,6 +167,7 @@ export class WeChatApiClient {
     const headers = this.#headers();
     headers['Content-Length'] = String(Buffer.byteLength(jsonBody, 'utf8'));
 
+    this.#logger?.debug?.(`POST ${redactUrl(url)} body=${redactBody(jsonBody)}`);
     const abort = createAbortContext(timeout, opts.signal);
 
     try {
@@ -142,6 +180,7 @@ export class WeChatApiClient {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
+        this.#logger?.debug?.(`POST ${path} ${res.status} ${redactBody(text)}`);
         throw new ApiError(`HTTP ${res.status}: ${text}`, res.status);
       }
 
@@ -164,6 +203,8 @@ export class WeChatApiClient {
     const url = `${this.#baseUrl}${path}`;
     const abort = createAbortContext(timeout, opts.signal);
 
+    this.#logger?.debug?.(`GET ${redactUrl(url)}`);
+
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -177,6 +218,7 @@ export class WeChatApiClient {
 
       if (!res.ok) {
         const text = await res.text().catch(() => '');
+        this.#logger?.debug?.(`GET ${path} ${res.status} ${redactBody(text)}`);
         throw new ApiError(`HTTP ${res.status}: ${text}`, res.status);
       }
 
@@ -238,6 +280,17 @@ export class WeChatApiClient {
    */
   async getUploadUrl(params) {
     return this.post('/ilink/bot/getuploadurl', params);
+  }
+
+  // --- Lifecycle notifications ---
+
+  async notifyStart() {
+    return this.post('/ilink/bot/msg/notifystart', {}, { timeout: TIMEOUT_LIGHTWEIGHT });
+  }
+
+  async notifyStop(opts = {}) {
+    const timeout = opts.timeout || TIMEOUT_LIGHTWEIGHT;
+    return this.post('/ilink/bot/msg/notifystop', {}, { timeout });
   }
 
   // --- QR Login ---

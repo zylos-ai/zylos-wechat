@@ -46,6 +46,9 @@ const DEFAULT_CONFIG = {
   wechat: {
     apiBase: 'https://ilinkai.weixin.qq.com',
     cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+    channelVersion: '2.1.3',
+    appId: 'bot',
+    botAgent: '',
   },
   c4: {
     receiveScript: detectExistingC4ReceiveScript(),
@@ -147,13 +150,26 @@ function buildEnvOverrides() {
     overrides.dmPolicy = overrides.dmAllowFrom.length > 0 ? 'allowlist' : 'open';
   }
 
-  if (process.env.WECHAT_API_BASE || process.env.WECHAT_CDN_BASE_URL) {
+  if (
+    process.env.WECHAT_API_BASE || process.env.WECHAT_CDN_BASE_URL ||
+    process.env.WECHAT_CHANNEL_VERSION || process.env.WECHAT_APP_ID ||
+    process.env.WECHAT_BOT_AGENT
+  ) {
     overrides.wechat = {};
     if (process.env.WECHAT_API_BASE) {
       overrides.wechat.apiBase = process.env.WECHAT_API_BASE;
     }
     if (process.env.WECHAT_CDN_BASE_URL) {
       overrides.wechat.cdnBaseUrl = process.env.WECHAT_CDN_BASE_URL;
+    }
+    if (process.env.WECHAT_CHANNEL_VERSION) {
+      overrides.wechat.channelVersion = process.env.WECHAT_CHANNEL_VERSION;
+    }
+    if (process.env.WECHAT_APP_ID) {
+      overrides.wechat.appId = process.env.WECHAT_APP_ID;
+    }
+    if (process.env.WECHAT_BOT_AGENT) {
+      overrides.wechat.botAgent = process.env.WECHAT_BOT_AGENT;
     }
   }
 
@@ -197,6 +213,9 @@ function normalizeConfig(candidate = {}) {
     wechat: {
       apiBase: merged.wechat?.apiBase || DEFAULT_CONFIG.wechat.apiBase,
       cdnBaseUrl: merged.wechat?.cdnBaseUrl || DEFAULT_CONFIG.wechat.cdnBaseUrl,
+      channelVersion: merged.wechat?.channelVersion || DEFAULT_CONFIG.wechat.channelVersion,
+      appId: merged.wechat?.appId ?? DEFAULT_CONFIG.wechat.appId,
+      botAgent: merged.wechat?.botAgent ?? DEFAULT_CONFIG.wechat.botAgent,
     },
     c4: {
       receiveScript: c4ReceiveScript,
@@ -219,6 +238,9 @@ function serializableConfig(nextConfig = getConfig()) {
     wechat: {
       apiBase: nextConfig.wechat.apiBase,
       cdnBaseUrl: nextConfig.wechat.cdnBaseUrl,
+      channelVersion: nextConfig.wechat.channelVersion,
+      appId: nextConfig.wechat.appId,
+      botAgent: nextConfig.wechat.botAgent,
     },
     c4: {
       receiveScript: nextConfig.c4?.receiveScript || nextConfig.c4ReceiveScript,
