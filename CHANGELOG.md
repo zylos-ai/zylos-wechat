@@ -2,6 +2,20 @@
 
 All notable changes to zylos-wechat will be documented in this file.
 
+## [0.3.0] - 2026-05-08
+
+### Added
+- Config-driven `channel_version` with env override, replacing hardcoded value (#19)
+- `iLink-App-Id` and numeric-encoded `ClientVersion` request headers (#19)
+- `bot_agent` field in `base_info` for upstream identification (#19)
+- `notifyStart` / `notifyStop` lifecycle hooks for session management (#19)
+- Log redaction module (`redact.js`) for sensitive data masking (#19)
+- 31 new unit tests for redaction and API client helpers (#19)
+- Component development guide (`CLAUDE.md`) (#21)
+
+### Fixed
+- Typing indicator not stopping after reply is sent (#16, #19)
+
 ## [0.2.1] - 2026-04-01
 
 ### Fixed
