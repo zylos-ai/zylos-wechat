@@ -102,11 +102,13 @@ if (existsSync(configPath)) {
     }
 
     if (config.dmAllowlist !== undefined) {
+      config._legacy_dmAllowlist = config.dmAllowlist;
       delete config.dmAllowlist;
       changed = true;
     }
 
     if (config.c4ReceiveScript !== undefined) {
+      config._legacy_c4ReceiveScript = config.c4ReceiveScript;
       delete config.c4ReceiveScript;
       changed = true;
     }
@@ -119,6 +121,7 @@ if (existsSync(configPath)) {
     }
   } catch (err) {
     console.error('  ✗ config migration failed:', err.message);
+    process.exit(1);
   }
 } else {
   console.log('  ○ no config.json found');
