@@ -4,9 +4,31 @@
  * Migrates config schema if needed.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, renameSync, unlinkSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+
+function timestampSuffix() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function backupConfigFile(filePath) {
+  if (!existsSync(filePath)) return null;
+  const backupPath = `${filePath}.backup.${timestampSuffix()}`;
+  copyFileSync(filePath, backupPath);
+  return backupPath;
+}
+
+function atomicWriteJSON(filePath, obj) {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    writeFileSync(tmpPath, JSON.stringify(obj, null, 2));
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
 
 const C4_RECEIVE_RELATIVE = '.claude/skills/comm-bridge/scripts/c4-receive.js';
 
@@ -102,19 +124,19 @@ if (existsSync(configPath)) {
     }
 
     if (config.dmAllowlist !== undefined) {
-      config._legacy_dmAllowlist = config.dmAllowlist;
       delete config.dmAllowlist;
       changed = true;
     }
 
     if (config.c4ReceiveScript !== undefined) {
-      config._legacy_c4ReceiveScript = config.c4ReceiveScript;
       delete config.c4ReceiveScript;
       changed = true;
     }
 
     if (changed) {
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const backupPath = backupConfigFile(configPath);
+      if (backupPath) console.log(`  ✓ backed up config to ${basename(backupPath)}`);
+      atomicWriteJSON(configPath, config);
       console.log('  ✓ config.json migrated with new fields');
     } else {
       console.log('  ○ config.json already up to date');
