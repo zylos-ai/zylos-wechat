@@ -36,8 +36,8 @@ function makeClient(uploadResponse) {
     async getUploadUrl() {
       return uploadResponse;
     },
-    async cdnUpload(uploadParam, filekey, encryptedData, uploadFullUrl) {
-      calls.push({ uploadParam, filekey, uploadFullUrl });
+    async cdnUpload(uploadParam, filekey, encryptedData, opts = {}) {
+      calls.push({ uploadParam, filekey, uploadFullUrl: opts.uploadFullUrl, timeoutMs: opts.timeoutMs });
       return 'download-param-stub';
     },
   };
@@ -105,6 +105,36 @@ console.log('Test 5: neither field present throws with the full response body');
   assert(error?.code === 'ERR_WECHAT_UPLOAD_URL', 'throws ERR_WECHAT_UPLOAD_URL');
   assert(error?.message.includes('some_unexpected_field'), 'error message includes the raw response');
   assert(!error?.message.includes('undefined'), 'error message has no undefined placeholders');
+}
+
+console.log('Test 6: retries share one budget instead of one timeout each');
+{
+  const budgets = [];
+  let attempts = 0;
+  const client = {
+    async getUploadUrl() {
+      return { upload_full_url: 'https://cdn.example/full' };
+    },
+    async cdnUpload(uploadParam, filekey, encryptedData, opts) {
+      attempts++;
+      budgets.push(opts.timeoutMs);
+      await new Promise((r) => setTimeout(r, 30)); // burn budget like a real attempt
+      throw new Error('network reset'); // no statusCode -> treated as retryable
+    },
+  };
+  let error = null;
+  try {
+    await uploadMedia(client, opts);
+  } catch (err) {
+    error = err;
+  }
+  assert(error?.code === 'ERR_WECHAT_CDN_UPLOAD', 'gives up with a CDN upload error');
+  assert(attempts === 3, `retried 3 times (got ${attempts})`);
+  assert(budgets.every((b) => b <= 300_000), 'no attempt is granted more than the total budget');
+  assert(
+    budgets[1] < budgets[0] && budgets[2] < budgets[1],
+    `remaining budget shrinks across attempts (got ${budgets.join(', ')})`,
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
