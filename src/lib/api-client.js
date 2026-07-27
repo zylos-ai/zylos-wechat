@@ -47,6 +47,47 @@ const TIMEOUT_LONGPOLL = 35_000;
 const TIMEOUT_REGULAR = 15_000;
 const TIMEOUT_LIGHTWEIGHT = 10_000;
 
+/**
+ * Total budget for one CDN upload including retries. Measured CDN throughput is ~33 KB/s,
+ * so a 600KB attachment already needs ~20s, far more than the regular API timeout allows.
+ * Callers spend this budget across attempts so retries cannot multiply the worst case.
+ * 300s also matches undici's own headers timeout, which bounds the request anyway.
+ */
+export const CDN_UPLOAD_TOTAL_TIMEOUT_MS = 300_000;
+
+/** Cap on server-supplied error text copied into an error message. */
+const CDN_ERROR_DETAIL_MAX_LEN = 200;
+
+/**
+ * `upload_full_url` is chosen by the server and we POST the encrypted file to it, so pin
+ * it to HTTPS on the configured CDN host. Other `weixin.qq.com` hosts are allowed so a
+ * server-side CDN migration does not break uploads the way the upload_param removal did.
+ * @param {string} rawUrl
+ * @param {string} cdnBaseUrl
+ * @returns {string} the validated URL
+ */
+function assertTrustedCdnUrl(rawUrl, cdnBaseUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new ApiError('CDN upload: server returned a malformed upload URL', 0);
+  }
+  if (url.protocol !== 'https:') {
+    throw new ApiError(`CDN upload: refusing non-HTTPS upload URL (${url.protocol})`, 0);
+  }
+  let expectedHost = null;
+  try {
+    expectedHost = new URL(cdnBaseUrl).host;
+  } catch {
+    // fall through to the weixin.qq.com check
+  }
+  if (url.host !== expectedHost && !url.host.endsWith('.weixin.qq.com')) {
+    throw new ApiError(`CDN upload: refusing untrusted upload host ${url.host}`, 0);
+  }
+  return url.href;
+}
+
 function generateUin() {
   const buf = randomBytes(4);
   const num = buf.readUInt32BE(0);
@@ -320,14 +361,30 @@ export class WeChatApiClient {
 
   /**
    * Upload encrypted file to CDN.
-   * @param {string} uploadParam
+   *
+   * The server may return a ready-made `upload_full_url` from getUploadUrl; it carries
+   * query params (e.g. `taskid`) that cannot be reconstructed client-side, so it always
+   * takes precedence over building the URL from `uploadParam`.
+   *
+   * @param {string|null} uploadParam
    * @param {string} filekey
    * @param {Buffer} encryptedData
+   * @param {object} [opts]
+   * @param {string} [opts.uploadFullUrl] - Full upload URL from getUploadUrl; used when present
+   * @param {number} [opts.timeoutMs] - Remaining budget for this attempt
    * @returns {Promise<string>}
    */
-  async cdnUpload(uploadParam, filekey, encryptedData) {
-    const url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
-    const abort = createAbortContext(TIMEOUT_REGULAR);
+  async cdnUpload(uploadParam, filekey, encryptedData, opts = {}) {
+    const fullUrl = opts.uploadFullUrl?.trim();
+    let url;
+    if (fullUrl) {
+      url = assertTrustedCdnUrl(fullUrl, this.#cdnBaseUrl);
+    } else if (uploadParam) {
+      url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+    } else {
+      throw new ApiError('CDN upload: no upload URL (need upload_full_url or upload_param)', 0);
+    }
+    const abort = createAbortContext(opts.timeoutMs ?? CDN_UPLOAD_TOTAL_TIMEOUT_MS);
 
     try {
       const res = await fetch(url, {
@@ -338,7 +395,9 @@ export class WeChatApiClient {
       });
 
       if (!res.ok) {
-        throw new ApiError(`CDN upload failed: HTTP ${res.status}`, res.status);
+        const raw = res.headers.get('x-error-message') || await res.text().catch(() => '');
+        const detail = redactBody(raw, CDN_ERROR_DETAIL_MAX_LEN);
+        throw new ApiError(`CDN upload failed: HTTP ${res.status}${raw ? ` ${detail}` : ''}`, res.status);
       }
 
       const downloadParam = res.headers.get('x-encrypted-param');

@@ -9,6 +9,8 @@ import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { prepareUpload, encodeAesKeyForMessage } from './media-crypto.js';
+import { CDN_UPLOAD_TOTAL_TIMEOUT_MS } from './api-client.js';
+import { redactBody } from './redact.js';
 
 /** Media type constants matching WeChat API */
 export const MEDIA_TYPE = {
@@ -57,18 +59,34 @@ export async function uploadMedia(client, opts) {
     throw new MediaUploadError(`getUploadUrl failed: ${err.message}`, 'ERR_WECHAT_UPLOAD_URL');
   }
 
-  if (!uploadResponse.upload_param) {
+  // The server returns either a ready-made upload_full_url or an upload_param to build
+  // the URL from. Either one is enough; full_url wins because it carries query params
+  // (e.g. taskid) we cannot reconstruct.
+  const uploadFullUrl = uploadResponse.upload_full_url?.trim() || undefined;
+  if (!uploadFullUrl && !uploadResponse.upload_param) {
     throw new MediaUploadError(
-      `getUploadUrl returned no upload_param: ret=${uploadResponse.ret} errmsg=${uploadResponse.errmsg}`,
+      `getUploadUrl returned no upload URL (need upload_full_url or upload_param): ${redactBody(JSON.stringify(uploadResponse))}`,
       'ERR_WECHAT_UPLOAD_URL'
     );
   }
 
-  // Step 3: CDN upload with retry
+  // Step 3: CDN upload with retry. All attempts share one budget so a stalled connection
+  // cannot turn CDN_MAX_RETRIES timeouts into a multiple of the per-attempt limit.
   let downloadParam;
+  const deadline = Date.now() + CDN_UPLOAD_TOTAL_TIMEOUT_MS;
   for (let attempt = 1; attempt <= CDN_MAX_RETRIES; attempt++) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new MediaUploadError(
+        `CDN upload exceeded its ${CDN_UPLOAD_TOTAL_TIMEOUT_MS}ms budget after ${attempt - 1} attempts`,
+        'ERR_WECHAT_CDN_UPLOAD'
+      );
+    }
     try {
-      downloadParam = await client.cdnUpload(uploadResponse.upload_param, filekey, encryptedData);
+      downloadParam = await client.cdnUpload(uploadResponse.upload_param, filekey, encryptedData, {
+        uploadFullUrl,
+        timeoutMs: remainingMs,
+      });
       break;
     } catch (err) {
       // 4xx: abort immediately

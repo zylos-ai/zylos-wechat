@@ -153,6 +153,7 @@ async function main() {
   const client = new WeChatApiClient({
     token: creds.token,
     baseUrl: creds.baseUrl,
+    cdnBaseUrl: cfg.wechat.cdnBaseUrl,
     channelVersion: cfg.wechat.channelVersion,
     appId: cfg.wechat.appId,
     botAgent: cfg.wechat.botAgent,

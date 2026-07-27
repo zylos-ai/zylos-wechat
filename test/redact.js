@@ -45,6 +45,19 @@ assert(
   !redactBody('{"my_field":"value"}').includes('<redacted>'),
   'non-sensitive fields untouched',
 );
+assert(
+  redactBody('{"filekey":"f1","aeskey":"0123456789abcdef"}') === '{"filekey":"f1","aeskey":"<redacted>"}',
+  'aeskey redacted, filekey kept',
+);
+assert(
+  redactBody('{"upload_full_url":"https://cdn/upload?encrypted_query_param=grant"}')
+    === '{"upload_full_url":"<redacted>"}',
+  'upload_full_url redacted',
+);
+assert(
+  redactBody('{"upload_param":"grant"}') === '{"upload_param":"<redacted>"}',
+  'upload_param redacted',
+);
 const longBody = 'a'.repeat(300);
 const truncated = redactBody(longBody);
 assert(truncated.length < 300 && truncated.includes('truncated'), 'long body truncated');

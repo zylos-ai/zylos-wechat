@@ -73,5 +73,41 @@ console.log('Test 5: buildClientVersion encoding (via constructor)');
   assert(client instanceof WeChatApiClient, 'overflow version does not throw');
 }
 
+console.log('Test 6: cdnUpload pins the server-supplied upload URL');
+{
+  // getUploadUrl hands us a full URL and we POST the encrypted file to it, so an
+  // untrusted host must be rejected before any request goes out. These all throw
+  // before fetch is reached, so no network is involved.
+  const client = new WeChatApiClient({ cdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c' });
+  const body = Buffer.from('x');
+
+  async function rejectedWith(uploadFullUrl) {
+    try {
+      await client.cdnUpload(null, 'fk', body, { uploadFullUrl });
+      return null;
+    } catch (err) {
+      return err.message;
+    }
+  }
+
+  assert(
+    (await rejectedWith('https://evil.example.com/upload'))?.includes('untrusted upload host'),
+    'foreign host rejected',
+  );
+  assert(
+    (await rejectedWith('http://novac2c.cdn.weixin.qq.com/upload'))?.includes('non-HTTPS'),
+    'plaintext HTTP rejected',
+  );
+  assert((await rejectedWith('not-a-url'))?.includes('malformed'), 'malformed URL rejected');
+  assert(
+    (await rejectedWith('https://novac2c.cdn.weixin.qq.com.evil.com/x'))?.includes('untrusted upload host'),
+    'suffix-lookalike host rejected',
+  );
+  assert(
+    (await rejectedWith(null))?.includes('no upload URL'),
+    'missing both URL and param rejected',
+  );
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

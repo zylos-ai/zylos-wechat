@@ -1,4 +1,6 @@
-const SENSITIVE_FIELD_RE = /"(context_token|bot_token|token|authorization|Authorization)"\s*:\s*"[^"]*"/g;
+// Upload credentials belong here too: aeskey is the file's AES key, and the upload/download
+// params are signed CDN grants. All of them travel through bodies we log at debug level.
+const SENSITIVE_FIELD_RE = /"(context_token|bot_token|token|authorization|Authorization|aeskey|aes_key|upload_param|thumb_upload_param|upload_full_url|encrypted_query_param|encrypt_query_param)"\s*:\s*"[^"]*"/g;
 const DEFAULT_BODY_MAX_LEN = 200;
 const DEFAULT_TOKEN_PREFIX_LEN = 6;
 
