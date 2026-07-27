@@ -2,6 +2,29 @@
 
 All notable changes to zylos-wechat will be documented in this file.
 
+## [0.3.2] - 2026-07-27
+
+### Fixed
+- `getUploadUrl` responses carrying only `upload_full_url` are now accepted;
+  the server stopped returning `upload_param`, which made every attachment
+  send fail with `ret=undefined errmsg=undefined` (#24)
+- CDN upload timeout raised from 15s to 300s; measured CDN throughput is
+  ~33 KB/s, so the old limit killed any attachment over roughly 500KB (#24)
+- CDN upload retries now share one 300s budget instead of multiplying it
+  into a 900s worst case (#24)
+- `scripts/send.js` and the poller clients in `src/index.js` now receive the
+  configured `wechat.cdnBaseUrl`; both silently used the compiled-in default,
+  so a non-default CDN config was ignored on outbound uploads and inbound
+  downloads (#24)
+- `npm test` no longer short-circuits on the first failing suite, which had
+  been hiding newly added tests (#24)
+
+### Security
+- `aeskey`, `upload_param` and the CDN grant params are redacted in logs and
+  error text; they were reaching debug request logs in plaintext (#24)
+- `upload_full_url` is validated as HTTPS on the configured CDN host before
+  the encrypted file is POSTed to it (#24)
+
 ## [0.3.1] - 2026-05-18
 
 ### Fixed
