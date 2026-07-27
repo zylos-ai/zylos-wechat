@@ -57,9 +57,13 @@ export async function uploadMedia(client, opts) {
     throw new MediaUploadError(`getUploadUrl failed: ${err.message}`, 'ERR_WECHAT_UPLOAD_URL');
   }
 
-  if (!uploadResponse.upload_param) {
+  // The server returns either a ready-made upload_full_url or an upload_param to build
+  // the URL from. Either one is enough; full_url wins because it carries query params
+  // (e.g. taskid) we cannot reconstruct.
+  const uploadFullUrl = uploadResponse.upload_full_url?.trim() || undefined;
+  if (!uploadFullUrl && !uploadResponse.upload_param) {
     throw new MediaUploadError(
-      `getUploadUrl returned no upload_param: ret=${uploadResponse.ret} errmsg=${uploadResponse.errmsg}`,
+      `getUploadUrl returned no upload URL (need upload_full_url or upload_param): ${JSON.stringify(uploadResponse)}`,
       'ERR_WECHAT_UPLOAD_URL'
     );
   }
@@ -68,7 +72,7 @@ export async function uploadMedia(client, opts) {
   let downloadParam;
   for (let attempt = 1; attempt <= CDN_MAX_RETRIES; attempt++) {
     try {
-      downloadParam = await client.cdnUpload(uploadResponse.upload_param, filekey, encryptedData);
+      downloadParam = await client.cdnUpload(uploadResponse.upload_param, filekey, encryptedData, uploadFullUrl);
       break;
     } catch (err) {
       // 4xx: abort immediately

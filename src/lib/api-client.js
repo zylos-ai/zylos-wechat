@@ -47,6 +47,13 @@ const TIMEOUT_LONGPOLL = 35_000;
 const TIMEOUT_REGULAR = 15_000;
 const TIMEOUT_LIGHTWEIGHT = 10_000;
 
+/**
+ * CDN uploads need far more headroom than a regular API call: the CDN takes ~10s to
+ * answer even for small payloads, so the 15s regular timeout leaves almost no margin.
+ * 300s also matches undici's own headers timeout, which is the effective ceiling anyway.
+ */
+const TIMEOUT_CDN_UPLOAD = 300_000;
+
 function generateUin() {
   const buf = randomBytes(4);
   const num = buf.readUInt32BE(0);
@@ -320,14 +327,28 @@ export class WeChatApiClient {
 
   /**
    * Upload encrypted file to CDN.
-   * @param {string} uploadParam
+   *
+   * The server may return a ready-made `upload_full_url` from getUploadUrl; it carries
+   * query params (e.g. `taskid`) that cannot be reconstructed client-side, so it always
+   * takes precedence over building the URL from `uploadParam`.
+   *
+   * @param {string|null} uploadParam
    * @param {string} filekey
    * @param {Buffer} encryptedData
+   * @param {string} [uploadFullUrl] - Full upload URL from getUploadUrl; used when present
    * @returns {Promise<string>}
    */
-  async cdnUpload(uploadParam, filekey, encryptedData) {
-    const url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
-    const abort = createAbortContext(TIMEOUT_REGULAR);
+  async cdnUpload(uploadParam, filekey, encryptedData, uploadFullUrl) {
+    const fullUrl = uploadFullUrl?.trim();
+    let url;
+    if (fullUrl) {
+      url = fullUrl;
+    } else if (uploadParam) {
+      url = `${this.#cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+    } else {
+      throw new ApiError('CDN upload: no upload URL (need upload_full_url or upload_param)', 0);
+    }
+    const abort = createAbortContext(TIMEOUT_CDN_UPLOAD);
 
     try {
       const res = await fetch(url, {
@@ -338,7 +359,8 @@ export class WeChatApiClient {
       });
 
       if (!res.ok) {
-        throw new ApiError(`CDN upload failed: HTTP ${res.status}`, res.status);
+        const detail = res.headers.get('x-error-message') || await res.text().catch(() => '');
+        throw new ApiError(`CDN upload failed: HTTP ${res.status}${detail ? ` ${detail}` : ''}`, res.status);
       }
 
       const downloadParam = res.headers.get('x-encrypted-param');
