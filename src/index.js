@@ -29,6 +29,7 @@ ensureDirs();
 
 const dataDir = paths.dataDir;
 const manager = new AccountManager(dataDir, {
+  cdnBaseUrl: runtimeConfig.wechat.cdnBaseUrl,
   channelVersion: runtimeConfig.wechat.channelVersion,
   appId: runtimeConfig.wechat.appId,
   botAgent: runtimeConfig.wechat.botAgent,
