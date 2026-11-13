@@ -154,6 +154,9 @@ async function handleMessages(msgs, accountId, normalizedId) {
 
     const text = extractText(msg);
     const endpoint = fromUserId ? `${normalizedId}|to:${fromUserId}` : normalizedId;
+    if (!fromUserId) {
+      logger.warn(`message ${msgId} has no from_user_id; it cannot be mapped to a session group or answered`);
+    }
     const content = mediaItem || text
       ? formatInboundContent(msg, mediaResult)
       : `[WeChat DM] ${fromUserId} said: ${text}`;

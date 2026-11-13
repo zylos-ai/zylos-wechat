@@ -15,14 +15,16 @@ const MAPPED = [
   ['def456-im-bot|to:o9cq80xyz@im.wechat', 'dm-def456-im-bot:o9cq80xyz:im.wechat'],
   // per-message or unknown endpoint parts never affect the group
   ['abc123-im-bot|msg:42|to:o9cq80xyz@im.wechat', 'dm-abc123-im-bot:o9cq80xyz:im.wechat'],
+  // scripts/send.js also accepts the user as the second part without `to:`
+  ['abc123-im-bot|o9cq80xyz@im.wechat', 'dm-abc123-im-bot:o9cq80xyz:im.wechat'],
 ];
 
 const INVALID = [
   '',
   'abc123-im-bot',                          // no to: part
-  'abc123-im-bot|o9cq80xyz@im.wechat',      // user without to:
   'abc123@im.bot|to:o9cq80xyz@im.wechat',   // raw (not normalized) account id
   '|to:o9cq80xyz@im.wechat',                // empty account
+  'o9cq80xyz@im.wechat',                     // bare user: no account
   'abc123-im-bot|to:',                       // empty user
   'abc123-im-bot|to:o9cq80xyz',             // no '@'
   'abc123-im-bot|to:a@b@im.wechat',         // two '@'

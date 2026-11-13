@@ -67,14 +67,14 @@ function neverStarted(error) {
     && typeof error.syscall === 'string' && error.syscall.startsWith('spawn');
 }
 
-function runReceive(args) {
+function runReceive(execFileImpl, args) {
   return new Promise((resolve) => {
     try {
-      execFile('node', args, { encoding: 'utf8' }, (error, stdout, stderr) => {
+      execFileImpl(process.execPath, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
         resolve({ error, stdout: stdout?.trim() || '', stderr: stderr?.trim() || '' });
       });
     } catch (error) {
-      // Invalid arguments (e.g. a NUL byte in the content) throw before spawning.
+      // Invalid arguments (e.g. a NUL byte in the endpoint) throw before spawning.
       resolve({ error, invalidArgs: true, stdout: '', stderr: '' });
     }
   });
@@ -88,7 +88,8 @@ function runReceive(args) {
  * dropped and resent to the overall group, and Core's error text only goes to
  * the log. c4-receive runs without a timeout: killing it after Core stored the
  * message and then retrying would deliver it twice. Only a call that never
- * started is retried once.
+ * started is retried once; if it never starts, nothing was stored.
+ * NUL bytes are removed from the content (they cannot be passed as arguments).
  *
  * @returns {Promise<{ outcome: 'sent'|'committed'|'not_stored'|'uncertain', notice: string|null }>}
  *   `notice` is the text to send the WeChat user, or null to send nothing.
@@ -101,10 +102,12 @@ export async function sendToC4({
   sessionGroup,
   logger,
   retryDelayMs = 2000,
+  execFileImpl = execFile,
 }) {
+  const safeContent = String(content).replace(/\0/g, '');
   for (let attempt = 1; ; attempt += 1) {
-    const args = buildC4ReceiveArgs({ scriptPath, channel, endpoint, content, sessionGroup });
-    const { error, invalidArgs, stdout, stderr } = await runReceive(args);
+    const args = buildC4ReceiveArgs({ scriptPath, channel, endpoint, content: safeContent, sessionGroup });
+    const { error, invalidArgs, stdout, stderr } = await runReceive(execFileImpl, args);
     if (invalidArgs) {
       logger?.error?.('c4 receive could not start (invalid arguments), not stored:', error.message);
       return { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY };
@@ -128,9 +131,13 @@ export async function sendToC4({
       return { outcome: 'sent', notice: null };
     }
 
-    if (!neverStarted(error) || attempt >= 2) {
+    if (!neverStarted(error)) {
       logger?.error?.('c4 receive failed, outcome unknown, not resending:', error.message, stderr);
       return { outcome: 'uncertain', notice: UNCERTAIN_REPLY };
+    }
+    if (attempt >= 2) {
+      logger?.error?.('c4 receive did not start after retry, not stored:', error.message);
+      return { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY };
     }
 
     logger?.warn?.(`c4 receive did not start, retrying in ${retryDelayMs}ms:`, error.message);

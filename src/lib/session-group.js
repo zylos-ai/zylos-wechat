@@ -6,6 +6,8 @@
  * agree. Rules (fixed once live; changing them needs a migration with Core):
  *   private chat `<account>|to:<user>` -> dm-<account>:<user with '@' as ':'>
  *   e.g. `abc123-im-bot|to:o9cq80xyz@im.wechat` -> dm-abc123-im-bot:o9cq80xyz:im.wechat
+ * `<account>|<user>` (no `to:`), which scripts/send.js also accepts, maps the
+ * same way. A bare `<user>` has no account and cannot be mapped without state.
  *
  * One group per bot account and WeChat user, because each account is its own
  * private chat with that user. Core only accepts [A-Za-z0-9_.:-], so the single
@@ -46,14 +48,15 @@ const quote = (value, max = 64) => JSON.stringify(String(value ?? '').slice(0, m
 export function sessionGroupFromEndpoint(endpoint) {
   const parts = String(endpoint ?? '').split('|');
   const accountId = parts[0];
+  // Same rule as scripts/send.js: the `to:` part, else the second part.
   const toPart = parts.slice(1).find((part) => part.startsWith('to:'));
-  const userId = toPart?.slice(3);
+  const userId = toPart ? toPart.slice(3) : parts[1];
 
   if (!ACCOUNT_ID.test(accountId)) {
     throw new Error(`invalid WeChat account id in endpoint: ${quote(endpoint)}`);
   }
   if (userId === undefined) {
-    throw new Error(`endpoint has no "to:" user: ${quote(endpoint)}`);
+    throw new Error(`endpoint has no user: ${quote(endpoint)}`);
   }
   const match = USER_ID.exec(userId);
   if (!match) {

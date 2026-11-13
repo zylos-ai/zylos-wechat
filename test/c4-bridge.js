@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import test from 'node:test';
 import {
   GENERIC_REJECT_REPLY,
@@ -105,30 +106,39 @@ test('a process that ran but failed without a result is not retried', async () =
   assert.equal(calls().length, 1);
 });
 
-test('a process that never started is retried once, then reported uncertain', async () => {
+const spawnError = () => Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn' });
+
+/** execFile that fails to spawn `failures` times, then runs the real fake receiver. */
+function flakySpawn(failures) {
+  let count = 0;
+  const impl = (cmd, args, options, cb) => {
+    count += 1;
+    if (count <= failures) { setImmediate(() => cb(spawnError(), '', '')); return; }
+    execFile(cmd, args, options, cb);
+  };
+  return { impl, attempts: () => count };
+}
+
+test('runs c4-receive with the current Node binary, not PATH lookup', async () => {
   setManifest(SUPPORTED);
-  const savedPath = process.env.PATH;
-  process.env.PATH = path.join(tmp, 'no-node-here');
-  try {
-    assert.deepEqual(await send('ok'), { outcome: 'uncertain', notice: UNCERTAIN_REPLY });
-  } finally {
-    process.env.PATH = savedPath;
-  }
-  assert.equal(calls().length, 0);
+  let command;
+  const execFileImpl = (cmd, args, options, cb) => { command = cmd; execFile(cmd, args, options, cb); };
+  assert.equal((await send('ok', { execFileImpl })).outcome, 'sent');
+  assert.equal(command, process.execPath);
 });
 
-test('a retry after a failed spawn delivers the message once', async () => {
+test('a process that never started is retried once; if it never starts, nothing was stored', async () => {
   setManifest(SUPPORTED);
-  const savedPath = process.env.PATH;
-  process.env.PATH = path.join(tmp, 'no-node-here');
+  const twice = flakySpawn(2);
+  assert.deepEqual(await send('ok', { execFileImpl: twice.impl }), { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY });
+  assert.equal(twice.attempts(), 2);
+  assert.deepEqual(calls(), []);
+
+  const once = flakySpawn(1);
   const warnings = [];
-  const logger = { warn: (...args) => { warnings.push(args.join(' ')); process.env.PATH = savedPath; } };
-  try {
-    assert.deepEqual(await send('ok', { logger }), { outcome: 'sent', notice: null });
-  } finally {
-    process.env.PATH = savedPath;
-  }
-  assert.equal(warnings.length, 1);
+  const logger = { warn: (...args) => warnings.push(args.join(' ')) };
+  assert.deepEqual(await send('ok', { execFileImpl: once.impl, logger }), { outcome: 'sent', notice: null });
+  assert.equal(once.attempts(), 2);
   assert.match(warnings[0], /did not start/);
   assert.deepEqual(calls(), [[...BASE_ARGS.slice(1), '--session-group', GROUP]]);
 });
@@ -205,22 +215,18 @@ test('sendTextNotice sends a text reply with the context token and never throws'
   assert.match(warnings[1], /net down/);
 });
 
-test('content c4-receive cannot be started with (NUL byte) is reported, not thrown or retried', async () => {
+test('NUL bytes are removed from the content instead of failing the message', async () => {
   setManifest(SUPPORTED);
-  fs.rmSync(callLog, { force: true });
-  process.env.FAKE_C4_MODE = 'ok';
-  const result = await sendToC4({ scriptPath, endpoint: ENDPOINT, content: 'a\0b', sessionGroup: GROUP, retryDelayMs: 10 });
-  assert.deepEqual(result, { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY });
-  assert.deepEqual(calls(), []);
+  assert.deepEqual(await send('ok', { content: 'a\0b' }), { outcome: 'sent', notice: null });
+  assert.equal(calls()[0][calls()[0].indexOf('--content') + 1], 'ab');
+});
 
-  const events = [];
-  const dispatched = await dispatchInbound({
-    scriptPath, endpoint: ENDPOINT, content: 'a\0b',
-    stopTyping: () => events.push('stopTyping'),
-    sendNotice: async (text) => events.push(`notice:${text}`),
-  });
-  assert.equal(dispatched.outcome, 'not_stored');
-  assert.deepEqual(events, ['stopTyping', `notice:${GENERIC_REJECT_REPLY}`]);
+test('arguments that cannot be passed are reported, not thrown or retried', async () => {
+  setManifest(SUPPORTED);
+  let attempts = 0;
+  const execFileImpl = () => { attempts += 1; throw Object.assign(new TypeError('bad arg'), { code: 'ERR_INVALID_ARG_VALUE' }); };
+  assert.deepEqual(await send('ok', { execFileImpl }), { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY });
+  assert.equal(attempts, 1);
 });
 
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

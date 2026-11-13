@@ -120,6 +120,11 @@ Core adds the `wechat:` namespace (e.g. `wechat:dm-abc123-im-bot:o9cq80xyz:im.we
 
 - These rules are fixed. Group names are Core's memory keys, so changing them
   would need a migration together with Core.
+- On a multi-session Core every outbound send is checked with
+  `scripts/session-group.js`, so send to `<account>|to:<user>` (or
+  `<account>|<user>`). A bare `<user>` cannot be mapped and is refused by Core.
+- A message without `from_user_id` cannot be mapped or answered; it is logged
+  and not sent to Core.
 - One group per bot account and user: the same person chatting with two bot
   accounts gets two groups.
 - The single `@` in the user id becomes `:`. The account id is the normalized id
@@ -134,8 +139,9 @@ Core adds the `wechat:` namespace (e.g. `wechat:dm-abc123-im-bot:o9cq80xyz:im.we
 - If Core rejects a message, Core's text goes only to the log. The user gets a
   "try again later" notice when Core stored nothing, a "may not have reached me"
   notice when the outcome is unknown, and nothing when Core already stored it.
-  A message is never resent without its group; c4-receive is retried (once,
-  after 2s) only when the process could not be started.
+  A message is never resent without its group; c4-receive runs without a
+  timeout and is retried (once, after 2s) only when the process could not be
+  started. NUL bytes are removed from the content.
 
 ```bash
 node ~/zylos/.claude/skills/wechat/scripts/session-group.js "<endpoint>"
