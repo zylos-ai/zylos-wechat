@@ -205,4 +205,22 @@ test('sendTextNotice sends a text reply with the context token and never throws'
   assert.match(warnings[1], /net down/);
 });
 
+test('content c4-receive cannot be started with (NUL byte) is reported, not thrown or retried', async () => {
+  setManifest(SUPPORTED);
+  fs.rmSync(callLog, { force: true });
+  process.env.FAKE_C4_MODE = 'ok';
+  const result = await sendToC4({ scriptPath, endpoint: ENDPOINT, content: 'a\0b', sessionGroup: GROUP, retryDelayMs: 10 });
+  assert.deepEqual(result, { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY });
+  assert.deepEqual(calls(), []);
+
+  const events = [];
+  const dispatched = await dispatchInbound({
+    scriptPath, endpoint: ENDPOINT, content: 'a\0b',
+    stopTyping: () => events.push('stopTyping'),
+    sendNotice: async (text) => events.push(`notice:${text}`),
+  });
+  assert.equal(dispatched.outcome, 'not_stored');
+  assert.deepEqual(events, ['stopTyping', `notice:${GENERIC_REJECT_REPLY}`]);
+});
+
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
