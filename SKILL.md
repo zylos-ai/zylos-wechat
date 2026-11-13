@@ -105,6 +105,49 @@ echo "hello" | node scripts/send.js "<normalized_account_id>|to:<wechat_user_id>
 echo "[MEDIA:image]/path/to/photo.png" | node scripts/send.js "<normalized_account_id>|to:<wechat_user_id>"
 ```
 
+## Session Groups (multi-session Core)
+
+With a zylos-core that supports multi-session, each inbound message carries a
+session group, so every private chat gets its own conversation thread. Replies
+still go through the same `reply via` path; `scripts/send.js` and the endpoint
+format are unchanged.
+
+| Conversation | Endpoint | Session group | Example |
+|---|---|---|---|
+| Private chat | `<account>\|to:<user>` | `dm-<account>:<user with @ as :>` | `dm-abc123-im-bot:o9cq80xyz:im.wechat` |
+
+Core adds the `wechat:` namespace (e.g. `wechat:dm-abc123-im-bot:o9cq80xyz:im.wechat`).
+
+- These rules are fixed. Group names are Core's memory keys, so changing them
+  would need a migration together with Core.
+- On a multi-session Core every outbound send is checked with
+  `scripts/session-group.js`, so send to `<account>|to:<user>` (or
+  `<account>|<user>`). A bare `<user>` cannot be mapped and is refused by Core.
+- A message without `from_user_id` cannot be mapped or answered; it is logged
+  and not sent to Core.
+- One group per bot account and user: the same person chatting with two bot
+  accounts gets two groups.
+- The single `@` in the user id becomes `:`. The account id is the normalized id
+  (no `:`) and a user id must contain exactly one `@` and no `:`, so the name
+  maps back to exactly one endpoint. Ids are never truncated or hashed; an
+  endpoint that cannot be mapped (or a name over 95 characters) is not sent to
+  Core, and the user is asked to try again later. It never falls back to the
+  overall group.
+- The group is derived and passed only if the installed Core lists
+  `--session-group` in `c4-receive-options.json` (re-read on every message).
+  Older Cores receive exactly the same arguments as before.
+- If Core rejects a message, Core's text goes only to the log. The user gets a
+  "try again later" notice when Core stored nothing, a "may not have reached me"
+  notice when the outcome is unknown, and nothing when Core already stored it.
+  A message is never resent without its group; c4-receive runs without a
+  timeout and is retried (once, after 2s) only when the process could not be
+  started. NUL bytes are removed from the content.
+
+```bash
+node ~/zylos/.claude/skills/wechat/scripts/session-group.js "<endpoint>"
+# prints e.g. dm-abc123-im-bot:o9cq80xyz:im.wechat (without "wechat:"), exit 0
+```
+
 ## Architecture
 
 - Long-poll (`getUpdates`) for inbound messages
