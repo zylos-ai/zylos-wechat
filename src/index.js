@@ -2,7 +2,7 @@
 import { join } from 'node:path';
 import { ensureDirs, getConfig, paths, stopWatching, watchConfig } from './lib/config.js';
 import { createLogger } from './lib/logger.js';
-import { sendToC4 } from './lib/bridge.js';
+import { dispatchInbound, sendTextNotice } from './lib/inbound-dispatch.js';
 import { AccountManager } from './lib/account-manager.js';
 import { ContextTokenStore } from './lib/context-tokens.js';
 import { TypingManager } from './lib/typing.js';
@@ -163,20 +163,18 @@ async function handleMessages(msgs, accountId, normalizedId) {
       typingMgr.startTyping(fromUserId, msg.context_token).catch(() => {});
     }
 
-    try {
-      await sendToC4({
-        scriptPath: runtimeConfig.c4ReceiveScript,
-        channel: 'wechat',
-        endpoint,
-        content,
-        logger,
-      });
-    } catch (err) {
-      logger.error('C4 dispatch failed:', err.message);
-      if (typingMgr && fromUserId) {
-        typingMgr.stopTyping(fromUserId).catch(() => {});
-      }
-    }
+    await dispatchInbound({
+      scriptPath: runtimeConfig.c4ReceiveScript,
+      endpoint,
+      content,
+      logger,
+      stopTyping: typingMgr && fromUserId
+        ? () => { typingMgr.stopTyping(fromUserId).catch(() => {}); }
+        : undefined,
+      sendNotice: client && fromUserId
+        ? (text) => sendTextNotice({ client, toUserId: fromUserId, contextToken: msg.context_token, text, logger })
+        : undefined,
+    });
 
     markSeen(dedupeKey);
   }
