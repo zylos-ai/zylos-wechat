@@ -1,116 +1,146 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 
-const MAX_ATTEMPTS = 2;
+export const GENERIC_REJECT_REPLY = "Sorry, I couldn't take this message right now. Please try again later.";
+export const UNCERTAIN_REPLY = "Sorry, this message may not have reached me. If you don't get a reply in a few minutes, please send it again.";
 
-function parseJsonMaybe(text) {
-  if (!text) return null;
-  const trimmed = text.trim();
-  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
-    return null;
-  }
-
+/**
+ * Whether the installed Core lists an optional c4-receive argument.
+ * Reads `c4-receive-options.json` beside the configured c4-receive script on
+ * every call, so a Core upgrade needs no restart. Missing or unreadable files,
+ * invalid JSON and invalid shapes all mean unsupported.
+ * @param {string} scriptPath - c4-receive.js path
+ * @param {string} name - e.g. '--session-group'
+ * @returns {boolean}
+ */
+export function c4ReceiveSupportsOption(scriptPath, name) {
   try {
-    return JSON.parse(trimmed);
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(path.dirname(scriptPath), 'c4-receive-options.json'), 'utf8'));
+    return manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest)
+      && manifest.options !== null && typeof manifest.options === 'object'
+      && !Array.isArray(manifest.options) && Object.hasOwn(manifest.options, name);
+  } catch {
+    return false;
+  }
+}
+
+export function buildC4ReceiveArgs({ scriptPath, channel, endpoint, content, sessionGroup }) {
+  const args = [scriptPath, '--channel', channel, '--endpoint', endpoint, '--json', '--content', content];
+  if (sessionGroup != null && sessionGroup !== '' && c4ReceiveSupportsOption(scriptPath, '--session-group')) {
+    args.push('--session-group', sessionGroup);
+  }
+  return args;
+}
+
+/**
+ * Classify a structured c4-receive rejection by `error.persisted`.
+ * - non-empty array: Core already stored the message; send nothing, do not resend.
+ * - empty array: nothing was stored; ask the user to try again later.
+ * - anything else (null, or absent on older Cores): unknown.
+ * @param {object} response - parsed `{ ok: false, error }` JSON
+ * @returns {'committed'|'not_stored'|'uncertain'}
+ */
+export function classifyC4Rejection(response) {
+  const persisted = response?.error?.persisted;
+  if (!Array.isArray(persisted)) return 'uncertain';
+  return persisted.length > 0 ? 'committed' : 'not_stored';
+}
+
+function parseC4Response(stdout) {
+  if (!stdout) return null;
+  try {
+    return JSON.parse(stdout.trim());
   } catch {
     return null;
   }
 }
 
-function getC4Failure(payload) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return null;
-  }
-
-  const rejected =
-    payload.ok === false ||
-    payload.accepted === false ||
-    payload.rejected === true ||
-    payload.reject === true ||
-    payload.status === 'error' ||
-    payload.status === 'rejected';
-
-  if (!rejected) {
-    return null;
-  }
-
-  return {
-    message: String(
-      payload.error ||
-      payload.message ||
-      payload.reason ||
-      payload.stderr ||
-      'C4 rejected message'
-    ),
-    retryable: payload.retryable === true,
-    details: payload,
-  };
+/**
+ * True when c4-receive never started (spawn itself failed), so Core cannot
+ * have stored anything. Any other failure without a structured result has an
+ * unknown outcome.
+ */
+function neverStarted(error) {
+  return typeof error?.code === 'string'
+    && typeof error.syscall === 'string' && error.syscall.startsWith('spawn');
 }
 
-function runReceive(scriptPath, args) {
-  return new Promise((resolve, reject) => {
-    execFile('node', args, { encoding: 'utf8' }, (error, stdout, stderr) => {
-      if (error) {
-        error.stderr = stderr?.trim() || '';
-        error.stdout = stdout?.trim() || '';
-        reject(error);
-        return;
-      }
-
-      resolve({
-        stdout: stdout?.trim() || '',
-        stderr: stderr?.trim() || '',
+function runReceive(execFileImpl, args) {
+  return new Promise((resolve) => {
+    try {
+      execFileImpl(process.execPath, args, { encoding: 'utf8' }, (error, stdout, stderr) => {
+        resolve({ error, stdout: stdout?.trim() || '', stderr: stderr?.trim() || '' });
       });
-    });
+    } catch (error) {
+      // Invalid arguments (e.g. a NUL byte in the endpoint) throw before spawning.
+      resolve({ error, invalidArgs: true, stdout: '', stderr: '' });
+    }
   });
 }
 
-export async function sendToC4({ scriptPath, channel = 'wechat', endpoint, content, logger }) {
-  const args = [
-    scriptPath,
-    '--channel', channel,
-    '--endpoint', endpoint,
-    '--json',
-    '--content', content,
-  ];
+/**
+ * Send an inbound message to Core via c4-receive.
+ *
+ * The session group is passed only when the installed Core lists
+ * --session-group (rechecked on every attempt). A rejected group is never
+ * dropped and resent to the overall group, and Core's error text only goes to
+ * the log. c4-receive runs without a timeout: killing it after Core stored the
+ * message and then retrying would deliver it twice. Only a call that never
+ * started is retried once; if it never starts, nothing was stored.
+ * NUL bytes are removed from the content (they cannot be passed as arguments).
+ *
+ * @returns {Promise<{ outcome: 'sent'|'committed'|'not_stored'|'uncertain', notice: string|null }>}
+ *   `notice` is the text to send the WeChat user, or null to send nothing.
+ */
+export async function sendToC4({
+  scriptPath,
+  channel = 'wechat',
+  endpoint,
+  content,
+  sessionGroup,
+  logger,
+  retryDelayMs = 2000,
+  execFileImpl = execFile,
+}) {
+  const safeContent = String(content).replace(/\0/g, '');
+  for (let attempt = 1; ; attempt += 1) {
+    const args = buildC4ReceiveArgs({ scriptPath, channel, endpoint, content: safeContent, sessionGroup });
+    const { error, invalidArgs, stdout, stderr } = await runReceive(execFileImpl, args);
+    if (invalidArgs) {
+      logger?.error?.('c4 receive could not start (invalid arguments), not stored:', error.message);
+      return { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY };
+    }
+    const response = parseC4Response(stdout);
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    let result;
-
-    try {
-      result = await runReceive(scriptPath, args);
-    } catch (error) {
-      if (attempt < MAX_ATTEMPTS) {
-        logger?.warn?.('c4 receive failed, retrying once', error.message, error.stderr || '');
-        continue;
+    if (response?.ok === false && response.error) {
+      const kind = classifyC4Rejection(response);
+      const { code, message } = response.error;
+      if (kind === 'committed') {
+        logger?.warn?.(`c4 rejected after commit (${code}), not resending:`, message);
+        return { outcome: 'committed', notice: null };
       }
-
-      logger?.error?.('c4 receive failed', error.message, error.stderr || '');
-      throw error;
+      logger?.warn?.(`c4 rejected (${code}, ${kind}) [group=${sessionGroup ?? ''}]:`, message);
+      return { outcome: kind, notice: kind === 'not_stored' ? GENERIC_REJECT_REPLY : UNCERTAIN_REPLY };
     }
 
-    if (result.stdout) {
-      logger?.debug?.('c4 response', result.stdout);
-    }
-    if (result.stderr) {
-      logger?.debug?.('c4 stderr', result.stderr);
-    }
-
-    const failure = getC4Failure(parseJsonMaybe(result.stdout));
-    if (!failure) {
-      return result.stdout;
+    if (!error) {
+      if (stdout) logger?.debug?.('c4 response', stdout);
+      if (stderr) logger?.debug?.('c4 stderr', stderr);
+      return { outcome: 'sent', notice: null };
     }
 
-    const error = new Error(failure.message);
-    error.details = failure.details;
-
-    if (attempt < MAX_ATTEMPTS && failure.retryable) {
-      logger?.warn?.('c4 receive rejected with retryable error, retrying once', failure.message);
-      continue;
+    if (!neverStarted(error)) {
+      logger?.error?.('c4 receive failed, outcome unknown, not resending:', error.message, stderr);
+      return { outcome: 'uncertain', notice: UNCERTAIN_REPLY };
+    }
+    if (attempt >= 2) {
+      logger?.error?.('c4 receive did not start after retry, not stored:', error.message);
+      return { outcome: 'not_stored', notice: GENERIC_REJECT_REPLY };
     }
 
-    logger?.error?.('c4 receive rejected', failure.message);
-    throw error;
+    logger?.warn?.(`c4 receive did not start, retrying in ${retryDelayMs}ms:`, error.message);
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
   }
-
-  throw new Error('c4 receive failed after retries');
 }
